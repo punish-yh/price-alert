@@ -66,6 +66,7 @@ export const api = {
   secTasks: () => request<{ items: SecTask[] }>('/api/sec/tasks'),
   createSecTask: (body: {
     tickers: string[]
+    watch_date: string
     window_start: string
     window_end: string
     note: string

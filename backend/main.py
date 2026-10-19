@@ -4,6 +4,7 @@ import hmac
 import logging
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -211,6 +212,7 @@ WINDOW_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 class SecTaskCreate(BaseModel):
     tickers: list[str] = Field(min_length=1, max_length=20)
+    watch_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     window_start: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     window_end: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     note: str = Field(default="", max_length=200)
@@ -218,7 +220,12 @@ class SecTaskCreate(BaseModel):
 
 @app.get("/api/sec/tasks")
 async def sec_tasks(user: str = auth.CurrentUser):
-    return {"items": database.list_sec_tasks()}
+    items = database.list_sec_tasks()
+    hits = database.sec_task_hit_counts()
+    for t in items:
+        t["hit_count"] = hits.get(t["id"], 0)
+        t["task_status"] = secpoller.task_status(t, t["hit_count"] > 0)
+    return {"items": items}
 
 
 @app.post("/api/sec/tasks", status_code=status.HTTP_201_CREATED)
@@ -227,6 +234,10 @@ async def sec_task_create(
     user: str = auth.CurrentUser,
     _: None = auth.CsrfGuard,
 ):
+    try:
+        datetime.strptime(body.watch_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "监听日期格式不正确")
     tickers = sorted({t.upper().strip() for t in body.tickers if t.strip()})
     if not tickers:
         raise HTTPException(400, "至少填写一个标的代码")
@@ -243,7 +254,9 @@ async def sec_task_create(
         raise
     except Exception as e:  # noqa: BLE001 - 映射拉取失败时放行
         logging.getLogger("main").warning("SEC ticker 映射校验跳过: %s", e)
-    return database.create_sec_task(tickers, body.window_start, body.window_end, body.note.strip())
+    return database.create_sec_task(
+        tickers, body.watch_date, body.window_start, body.window_end, body.note.strip()
+    )
 
 
 @app.post("/api/sec/tasks/{task_id}/delete")

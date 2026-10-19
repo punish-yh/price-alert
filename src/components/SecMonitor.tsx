@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ExternalLink, FileText, Loader2, Plus, Trash2 } from 'lucide-react'
+import { CheckCircle2, ExternalLink, FileText, Loader2, Plus, Trash2 } from 'lucide-react'
 import { api, fmtTime } from '@/lib/api'
-import type { SecHit, SecStatus, SecTask } from '@/types'
+import type { SecHit, SecStatus, SecTask, SecTaskState } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -24,9 +24,23 @@ interface Props {
   onChanged: () => void
 }
 
+/** 今天（本地时区，即北京时间）的 YYYY-MM-DD，用作监听日期默认值 */
+function todayStr(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+const TASK_STATUS_META: Record<SecTaskState, { label: string; cls: string }> = {
+  pending: { label: '未启动', cls: 'border-zinc-300 bg-zinc-100 text-zinc-600' },
+  listening: { label: '监听中', cls: 'border-sky-300 bg-sky-50 text-sky-700' },
+  acquired: { label: '已获取', cls: 'border-emerald-300 bg-emerald-50 text-emerald-700' },
+  failed: { label: '监听失败', cls: 'border-red-300 bg-red-50 text-red-600' },
+}
+
 function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false)
   const [tickers, setTickers] = useState('')
+  const [watchDate, setWatchDate] = useState(todayStr)
   const [windowStart, setWindowStart] = useState('20:00')
   const [windowEnd, setWindowEnd] = useState('06:00')
   const [note, setNote] = useState('')
@@ -47,6 +61,7 @@ function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
     try {
       await api.createSecTask({
         tickers: list,
+        watch_date: watchDate,
         window_start: windowStart,
         window_end: windowEnd,
         note: note.trim(),
@@ -75,8 +90,9 @@ function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
         <DialogHeader>
           <DialogTitle>新建 SEC 财报监听</DialogTitle>
           <DialogDescription>
-            在指定的北京时间窗口内监听 SEC EDGAR，一旦标的发布 10-Q / 10-K
-            财报（含修订版）立即在页面弹出通知。窗口支持跨夜（如 20:00 – 次日 06:00）。
+            只在指定的「日期 + 北京时间窗口」内监听 SEC EDGAR，窗口支持跨夜（如 20:00 –
+            次日 06:00）。标的发布 10-Q / 10-K（含修订版）即视为已获取，页面弹窗提醒；
+            窗口结束仍未捕获则标记为监听失败。
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -92,9 +108,19 @@ function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
             />
             <p className="text-xs text-muted-foreground">用逗号或空格分隔，创建时会用 SEC 官方名录校验</p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div className="space-y-2">
-              <Label htmlFor="sec-start">开始时间（北京）</Label>
+              <Label htmlFor="sec-date">监听日期（北京）</Label>
+              <Input
+                id="sec-date"
+                type="date"
+                value={watchDate}
+                onChange={(e) => setWatchDate(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="sec-start">开始时间</Label>
               <Input
                 id="sec-start"
                 type="time"
@@ -104,7 +130,7 @@ function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="sec-end">结束时间（北京）</Label>
+              <Label htmlFor="sec-end">结束时间</Label>
               <Input
                 id="sec-end"
                 type="time"
@@ -270,39 +296,49 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
               还没有监听任务，点击右上角「新建监听」开始
             </p>
           ) : (
-            tasks.map((t) => (
-              <div
-                key={t.id}
-                className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border/50 px-3 py-2.5 text-sm"
-              >
-                <span className="flex flex-wrap gap-1">
-                  {t.tickers.map((tk) => (
-                    <Badge key={tk} variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
-                      {tk}
-                    </Badge>
-                  ))}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  北京时间 {t.window_start} – {t.window_end}
-                </span>
-                {t.note && <span className="text-xs text-muted-foreground">｜{t.note}</span>}
-                <span className="ml-auto">
-                  {busyId === t.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
-                      onClick={() => handleDelete(t.id)}
-                    >
-                      <Trash2 className="mr-1 h-3.5 w-3.5" />
-                      删除
-                    </Button>
+            tasks.map((t) => {
+              const meta = TASK_STATUS_META[t.task_status] ?? TASK_STATUS_META.pending
+              return (
+                <div
+                  key={t.id}
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border/50 px-3 py-2.5 text-sm"
+                >
+                  <Badge variant="outline" className={meta.cls}>
+                    {t.task_status === 'acquired' && <CheckCircle2 className="mr-1 h-3 w-3" />}
+                    {meta.label}
+                  </Badge>
+                  <span className="flex flex-wrap gap-1">
+                    {t.tickers.map((tk) => (
+                      <Badge key={tk} variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
+                        {tk}
+                      </Badge>
+                    ))}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {t.watch_date} 北京时间 {t.window_start} – {t.window_end}
+                  </span>
+                  {t.task_status === 'acquired' && t.hit_count > 0 && (
+                    <span className="text-xs text-emerald-600">已捕获 {t.hit_count} 份</span>
                   )}
-                </span>
-              </div>
-            ))
+                  {t.note && <span className="text-xs text-muted-foreground">｜{t.note}</span>}
+                  <span className="ml-auto">
+                    {busyId === t.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+                        onClick={() => handleDelete(t.id)}
+                      >
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />
+                        删除
+                      </Button>
+                    )}
+                  </span>
+                </div>
+              )
+            })
           )}
         </CardContent>
       </Card>

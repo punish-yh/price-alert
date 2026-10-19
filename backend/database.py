@@ -53,6 +53,10 @@ def init_db() -> None:
             _conn.execute("ALTER TABLE monitors ADD COLUMN ema_period INTEGER")
         if "interval" not in cols:
             _conn.execute("ALTER TABLE monitors ADD COLUMN interval TEXT")
+        # 兼容旧库：sec_tasks 增加监听日期列
+        cols_sec = {r["name"] for r in _conn.execute("PRAGMA table_info(sec_tasks)")}
+        if "watch_date" not in cols_sec:
+            _conn.execute("ALTER TABLE sec_tasks ADD COLUMN watch_date TEXT")
         _conn.execute(
             """
             CREATE TABLE IF NOT EXISTS tv_forwards (
@@ -73,6 +77,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS sec_tasks (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 tickers      TEXT    NOT NULL,
+                watch_date   TEXT    NOT NULL,
                 window_start TEXT    NOT NULL,
                 window_end   TEXT    NOT NULL,
                 note         TEXT    NOT NULL DEFAULT '',
@@ -248,13 +253,15 @@ def _sec_task_row(row: sqlite3.Row) -> dict[str, Any]:
     return d
 
 
-def create_sec_task(tickers: list[str], window_start: str, window_end: str, note: str) -> dict[str, Any]:
+def create_sec_task(
+    tickers: list[str], watch_date: str, window_start: str, window_end: str, note: str
+) -> dict[str, Any]:
     now = _now()
     with _lock, _conn:
         cur = _conn.execute(
-            """INSERT INTO sec_tasks (tickers, window_start, window_end, note, status, created_at, updated_at)
-               VALUES (?,?,?,?, 'active', ?, ?)""",
-            (json.dumps(tickers), window_start, window_end, note, now, now),
+            """INSERT INTO sec_tasks (tickers, watch_date, window_start, window_end, note, status, created_at, updated_at)
+               VALUES (?,?,?,?,?, 'active', ?, ?)""",
+            (json.dumps(tickers), watch_date, window_start, window_end, note, now, now),
         )
         task_id = cur.lastrowid
     return get_sec_task(task_id)  # type: ignore[return-value]
@@ -336,3 +343,12 @@ def ticker_has_hits(ticker: str) -> bool:
             "SELECT 1 FROM sec_hits WHERE ticker=? LIMIT 1", (ticker,)
         ).fetchone()
     return row is not None
+
+
+def sec_task_hit_counts() -> dict[int, int]:
+    """每个任务捕获到的非存量（新发）财报数"""
+    with _lock:
+        rows = _conn.execute(
+            "SELECT task_id, COUNT(*) AS n FROM sec_hits WHERE baseline=0 GROUP BY task_id"
+        ).fetchall()
+    return {r["task_id"]: r["n"] for r in rows}

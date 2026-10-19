@@ -39,13 +39,20 @@ export interface TvForward {
   forward_error: string | null
 }
 
+export type SecTaskState = 'pending' | 'listening' | 'acquired' | 'failed'
+
 export interface SecTask {
   id: number
   tickers: string[]
+  watch_date: string
   window_start: string
   window_end: string
   note: string
+  /** 数据库状态（active/deleted） */
   status: 'active' | 'deleted'
+  /** 实时推导的监听状态（未启动/监听中/已获取/监听失败） */
+  task_status: SecTaskState
+  hit_count: number
   created_at: string
   updated_at: string
 }

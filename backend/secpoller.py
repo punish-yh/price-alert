@@ -78,6 +78,58 @@ def in_window(window_start: str, window_end: str) -> bool:
     return now >= s or now <= e
 
 
+def task_window(task: dict) -> tuple[datetime, datetime] | None:
+    """任务的北京时间绝对起止时间。
+
+    watch_date 为监听日期（YYYY-MM-DD），跨夜窗口自动顺延到次日；
+    旧数据 watch_date 为空时退化为「今天」的周期窗口（仅兼容，新任务必带日期）。
+    """
+    s = _parse_hhmm(task["window_start"])
+    e = _parse_hhmm(task["window_end"])
+    if s is None or e is None:
+        return None
+    watch_date = (task.get("watch_date") or "").strip()
+    if watch_date:
+        try:
+            base = datetime.strptime(watch_date, "%Y-%m-%d")
+        except ValueError:
+            return None
+        base = base.replace(tzinfo=CN_TZ)
+    else:
+        now = datetime.now(CN_TZ)
+        base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = base.replace(hour=s.hour, minute=s.minute, second=0, microsecond=0)
+    end = base.replace(hour=e.hour, minute=e.minute, second=0, microsecond=0)
+    if end <= start:
+        end += timedelta(days=1)
+    return start, end
+
+
+def in_task_window(task: dict) -> bool:
+    """当前是否处于任务的（日期 + 时间窗）监听时段内"""
+    window = task_window(task)
+    if window is None:
+        return False
+    start, end = window
+    return start <= datetime.now(CN_TZ) <= end
+
+
+def task_status(task: dict, has_hit: bool) -> str:
+    """任务状态：已获取 > 未启动 / 监听中 / 监听失败（由时间窗和命中情况实时推导）"""
+    if has_hit:
+        return "acquired"
+    window = task_window(task)
+    if window is None:
+        return "failed"
+    start, end = window
+    now = datetime.now(CN_TZ)
+    if now < start:
+        return "pending"
+    if now <= end:
+        return "listening"
+    return "failed"
+
+
 def _parse_hhmm(value: str):
     try:
         h, m = value.split(":")
@@ -266,7 +318,7 @@ async def sec_poller_loop() -> None:
         while True:
             try:
                 tasks = database.active_sec_tasks()
-                due = [t for t in tasks if in_window(t["window_start"], t["window_end"])]
+                due = [t for t in tasks if in_task_window(t)]
                 sec_status.update(
                     active_tasks=len(tasks),
                     in_window=bool(due),
