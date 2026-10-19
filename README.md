@@ -160,6 +160,20 @@ server {
 
 证书用 `sudo apt install certbot python3-certbot-nginx && sudo certbot --nginx` 免费签发即可。部署后访问 `https://你的域名`，在「TradingView 转发」页复制的 webhook 地址会自动带上域名，填进 TradingView 告警即可。
 
+### 8. 无域名快速对外（仅自用，HTTP 明文）
+
+没有域名时的简化方案：服务直接绑 80 端口对外。**代价是明文 HTTP**（登录密码在网络上传输不加密，且 TradingView webhook 需要 HTTPS、用不了），只适合临时自用，有域名后请切回方式 7。
+
+```bash
+# 服务改绑 0.0.0.0:80
+sudo sed -i 's/--host 127.0.0.1 --port 8787/--host 0.0.0.0 --port 80/' /etc/systemd/system/price-alert.service
+sudo systemctl daemon-reload && sudo systemctl restart price-alert
+```
+
+- 腾讯云控制台 → 安全组 → 入站规则添加 **TCP:80**（来源 0.0.0.0/0）
+- `.env` 中 `COOKIE_SECURE` 保持 `false`
+- 浏览器访问 `http://服务器IP`
+
 ### 日常更新
 
 ```bash
@@ -169,6 +183,35 @@ npm install && npm run build           # 前端有变化时
 .venv/bin/pip install -r backend/requirements.txt   # 依赖有变化时
 sudo systemctl restart price-alert
 ```
+
+> **git pull 不会覆盖你的配置**：`backend/.env`、`backend/data/`（数据库、JWT 密钥、TV webhook 令牌）都在 `.gitignore` 里，更新只动代码文件。唯一注意：不要在服务器上修改会被 git 跟踪的文件（如 README、源码），否则下次 pull 可能冲突。
+
+### 常见问题（部署踩坑实录）
+
+**npm 报一堆 `EBADENGINE` / build 失败**：系统 Node 太旧（Ubuntu 仓库自带 Node 12）。用第 1 步的 NodeSource 装 Node 20 后，删掉 `node_modules` 重装：`rm -rf node_modules && npm install && npm run build`。
+
+**装 nodejs 报 `trying to overwrite '/usr/include/node/common.gypi'`**：老开发包冲突，先卸再装：
+
+```bash
+sudo apt remove -y libnode-dev libnode72 && sudo apt autoremove -y
+sudo apt install -y nodejs
+```
+
+**`python3 -m venv` 报 ensurepip not available**：缺 venv 组件，`sudo apt install -y python3.10-venv python3-pip` 后删掉半截 `.venv` 重建。
+
+**`npm install` 报 `EACCES: permission denied`**：目录属 root。把归属改回来即可，之后都不用 sudo 跑 npm：`sudo chown -R ubuntu:ubuntu /opt/price-alert`。
+
+**服务起不来，日志 `address already in use`，绑 80 时尤其常见**：先看谁占的 `sudo ss -tlnp | grep :80`，通常是预装的 web 服务器。确认没用后停掉：
+
+```bash
+sudo systemctl stop caddy nginx apache2 2>/dev/null
+sudo systemctl disable caddy nginx apache2 2>/dev/null
+sudo systemctl restart price-alert
+```
+
+**安全组已放行但浏览器打不开**：① 先在本机（不是服务器）`curl -v http://服务器IP` 确认链路——能返回 200 就是服务器侧全通，问题在本地（见下条）；② 检查服务器防火墙 `sudo ufw status`，active 的话 `sudo ufw allow 80/tcp`；③ 核对安全组确实绑定在该实例上、规则方向是入站。
+
+**curl 能通但浏览器「意外终止了连接」**：99% 是本地代理工具（Clash/v2ray 等）规则问题。给服务器 IP 加直连规则、显式输入 `http://` 前缀、或开无痕窗口（排除强制 HTTPS 类扩展）再试；用手机流量访问可快速定位是本地还是服务器问题。
 
 ## 配置项（backend/.env）
 
