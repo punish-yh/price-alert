@@ -1,0 +1,338 @@
+"""SQLite 存储层：监控项的增删改查与状态流转"""
+import json
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from . import config
+
+_lock = threading.Lock()
+_conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
+_conn.row_factory = sqlite3.Row
+_conn.execute("PRAGMA journal_mode=WAL")
+
+VALID_STATUS = ("active", "triggered", "deleted")
+
+
+def init_db() -> None:
+    with _lock, _conn:
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS monitors (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol        TEXT    NOT NULL,
+                type          TEXT    NOT NULL DEFAULT 'price'
+                                      CHECK (type IN ('price','ema_cross')),
+                direction     TEXT    NOT NULL CHECK (direction IN ('above','below')),
+                target_price  REAL    NOT NULL,
+                ema_period    INTEGER,
+                interval      TEXT,
+                note          TEXT    NOT NULL DEFAULT '',
+                status        TEXT    NOT NULL DEFAULT 'active'
+                                      CHECK (status IN ('active','triggered','deleted')),
+                created_at    TEXT    NOT NULL,
+                updated_at    TEXT    NOT NULL,
+                triggered_at  TEXT,
+                trigger_price REAL,
+                webhook_ok    INTEGER,
+                webhook_error TEXT
+            )
+            """
+        )
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_monitors_status ON monitors(status)")
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_monitors_symbol ON monitors(symbol)")
+        # 兼容旧库：补充告警类型相关列
+        cols = {r["name"] for r in _conn.execute("PRAGMA table_info(monitors)")}
+        if "type" not in cols:
+            _conn.execute(
+                "ALTER TABLE monitors ADD COLUMN type TEXT NOT NULL DEFAULT 'price'"
+                " CHECK (type IN ('price','ema_cross'))"
+            )
+        if "ema_period" not in cols:
+            _conn.execute("ALTER TABLE monitors ADD COLUMN ema_period INTEGER")
+        if "interval" not in cols:
+            _conn.execute("ALTER TABLE monitors ADD COLUMN interval TEXT")
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tv_forwards (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                received_at  TEXT    NOT NULL,
+                source_ip    TEXT    NOT NULL DEFAULT '',
+                content_type TEXT    NOT NULL DEFAULT '',
+                raw_body     TEXT    NOT NULL DEFAULT '',
+                summary      TEXT    NOT NULL DEFAULT '',
+                forward_ok   INTEGER,
+                forward_error TEXT   NOT NULL DEFAULT ''
+            )
+            """
+        )
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_tv_forwards_time ON tv_forwards(received_at)")
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sec_tasks (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                tickers      TEXT    NOT NULL,
+                window_start TEXT    NOT NULL,
+                window_end   TEXT    NOT NULL,
+                note         TEXT    NOT NULL DEFAULT '',
+                status       TEXT    NOT NULL DEFAULT 'active'
+                                     CHECK (status IN ('active','deleted')),
+                created_at   TEXT    NOT NULL,
+                updated_at   TEXT    NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sec_hits (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id     INTEGER NOT NULL,
+                ticker      TEXT    NOT NULL,
+                form        TEXT    NOT NULL,
+                filing_date TEXT    NOT NULL,
+                accession   TEXT    NOT NULL UNIQUE,
+                primary_doc TEXT    NOT NULL DEFAULT '',
+                url         TEXT    NOT NULL DEFAULT '',
+                baseline    INTEGER NOT NULL DEFAULT 0,
+                detected_at TEXT    NOT NULL
+            )
+            """
+        )
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_sec_hits_time ON sec_hits(detected_at)")
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return dict(row)
+
+
+def list_monitors() -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM monitors ORDER BY symbol, created_at DESC"
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_monitor(monitor_id: int) -> Optional[dict[str, Any]]:
+    with _lock:
+        row = _conn.execute("SELECT * FROM monitors WHERE id=?", (monitor_id,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def create_monitor(
+    symbol: str,
+    direction: str,
+    target_price: float,
+    note: str,
+    type: str = "price",
+    ema_period: int | None = None,
+    interval: str | None = None,
+) -> dict[str, Any]:
+    now = _now()
+    with _lock, _conn:
+        cur = _conn.execute(
+            """INSERT INTO monitors
+               (symbol, type, direction, target_price, ema_period, interval, note, status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?, 'active', ?, ?)""",
+            (symbol.upper(), type, direction, target_price, ema_period, interval, note, now, now),
+        )
+        monitor_id = cur.lastrowid
+    return get_monitor(monitor_id)  # type: ignore[return-value]
+
+
+def soft_or_hard_delete(monitor_id: int) -> str:
+    """active/triggered -> deleted；deleted -> 物理删除。返回 'deleted' | 'purged' | 'missing'"""
+    with _lock, _conn:
+        row = _conn.execute("SELECT status FROM monitors WHERE id=?", (monitor_id,)).fetchone()
+        if row is None:
+            return "missing"
+        if row["status"] == "deleted":
+            _conn.execute("DELETE FROM monitors WHERE id=?", (monitor_id,))
+            return "purged"
+        _conn.execute(
+            "UPDATE monitors SET status='deleted', updated_at=? WHERE id=?",
+            (_now(), monitor_id),
+        )
+        return "deleted"
+
+
+def restore_monitor(monitor_id: int) -> bool:
+    """triggered/deleted -> active（重新激活后触发记录清空）"""
+    with _lock, _conn:
+        cur = _conn.execute(
+            """UPDATE monitors
+               SET status='active', updated_at=?, triggered_at=NULL,
+                   trigger_price=NULL, webhook_ok=NULL, webhook_error=NULL
+               WHERE id=? AND status IN ('triggered','deleted')""",
+            (_now(), monitor_id),
+        )
+        return cur.rowcount > 0
+
+
+def active_monitors() -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute("SELECT * FROM monitors WHERE status='active'").fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def mark_triggered(monitor_id: int, trigger_price: float) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            """UPDATE monitors
+               SET status='triggered', triggered_at=?, trigger_price=?, updated_at=?
+               WHERE id=? AND status='active'""",
+            (_now(), trigger_price, _now(), monitor_id),
+        )
+
+
+def set_webhook_result(monitor_id: int, ok: bool, error: str = "") -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "UPDATE monitors SET webhook_ok=?, webhook_error=? WHERE id=?",
+            (1 if ok else 0, error[:500], monitor_id),
+        )
+
+
+def monitored_symbols() -> list[str]:
+    with _lock:
+        rows = _conn.execute(
+            "SELECT DISTINCT symbol FROM monitors WHERE status != 'deleted'"
+        ).fetchall()
+    return [r["symbol"] for r in rows]
+
+
+# ---------------- TradingView 转发记录 ----------------
+
+def add_tv_forward(source_ip: str, content_type: str, raw_body: str, summary: str) -> int:
+    with _lock, _conn:
+        cur = _conn.execute(
+            """INSERT INTO tv_forwards (received_at, source_ip, content_type, raw_body, summary)
+               VALUES (?,?,?,?,?)""",
+            (_now(), source_ip, content_type, raw_body[:4000], summary[:500]),
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def set_tv_forward_result(record_id: int, ok: bool, error: str = "") -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "UPDATE tv_forwards SET forward_ok=?, forward_error=? WHERE id=?",
+            (1 if ok else 0, error[:500], record_id),
+        )
+
+
+def list_tv_forwards(limit: int = 200) -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM tv_forwards ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def delete_tv_forward(record_id: int) -> bool:
+    with _lock, _conn:
+        cur = _conn.execute("DELETE FROM tv_forwards WHERE id=?", (record_id,))
+        return cur.rowcount > 0
+
+
+# ---------------- SEC 财报监听 ----------------
+
+def _sec_task_row(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    d["tickers"] = json.loads(d["tickers"])
+    return d
+
+
+def create_sec_task(tickers: list[str], window_start: str, window_end: str, note: str) -> dict[str, Any]:
+    now = _now()
+    with _lock, _conn:
+        cur = _conn.execute(
+            """INSERT INTO sec_tasks (tickers, window_start, window_end, note, status, created_at, updated_at)
+               VALUES (?,?,?,?, 'active', ?, ?)""",
+            (json.dumps(tickers), window_start, window_end, note, now, now),
+        )
+        task_id = cur.lastrowid
+    return get_sec_task(task_id)  # type: ignore[return-value]
+
+
+def get_sec_task(task_id: int) -> Optional[dict[str, Any]]:
+    with _lock:
+        row = _conn.execute("SELECT * FROM sec_tasks WHERE id=?", (task_id,)).fetchone()
+    return _sec_task_row(row) if row else None
+
+
+def list_sec_tasks() -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM sec_tasks WHERE status != 'deleted' ORDER BY created_at DESC"
+        ).fetchall()
+    return [_sec_task_row(r) for r in rows]
+
+
+def active_sec_tasks() -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute("SELECT * FROM sec_tasks WHERE status='active'").fetchall()
+    return [_sec_task_row(r) for r in rows]
+
+
+def delete_sec_task(task_id: int) -> bool:
+    with _lock, _conn:
+        cur = _conn.execute(
+            "UPDATE sec_tasks SET status='deleted', updated_at=? WHERE id=? AND status='active'",
+            (_now(), task_id),
+        )
+        return cur.rowcount > 0
+
+
+def known_accessions(tickers: list[str]) -> set[str]:
+    if not tickers:
+        return set()
+    marks = ",".join("?" for _ in tickers)
+    with _lock:
+        rows = _conn.execute(
+            f"SELECT accession FROM sec_hits WHERE ticker IN ({marks})", tickers
+        ).fetchall()
+    return {r["accession"] for r in rows}
+
+
+def add_sec_hit(
+    task_id: int,
+    ticker: str,
+    form: str,
+    filing_date: str,
+    accession: str,
+    primary_doc: str,
+    url: str,
+    baseline: bool,
+) -> bool:
+    """按 accession 去重插入；已存在返回 False"""
+    with _lock, _conn:
+        cur = _conn.execute(
+            """INSERT OR IGNORE INTO sec_hits
+               (task_id, ticker, form, filing_date, accession, primary_doc, url, baseline, detected_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (task_id, ticker, form, filing_date, accession, primary_doc, url,
+             1 if baseline else 0, _now()),
+        )
+        return cur.rowcount > 0
+
+
+def list_sec_hits(limit: int = 100) -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM sec_hits ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def ticker_has_hits(ticker: str) -> bool:
+    with _lock:
+        row = _conn.execute(
+            "SELECT 1 FROM sec_hits WHERE ticker=? LIMIT 1", (ticker,)
+        ).fetchone()
+    return row is not None
