@@ -1,6 +1,7 @@
 """FastAPI 入口：认证接口 + 监控管理接口 + 生产模式静态托管前端"""
 import asyncio
 import hmac
+import json
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -10,7 +11,7 @@ from pathlib import Path
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -301,6 +302,29 @@ async def sec_task_delete(
 @app.get("/api/sec/hits")
 async def sec_hits(user: str = auth.CurrentUser):
     return {"items": database.list_sec_hits(), "status": secpoller.sec_status}
+
+
+@app.get("/api/sec/events")
+async def sec_events(user: str = auth.CurrentUser):
+    """SEC 新财报实时推送（SSE）：命中即刻发到网页，替代前端轮询的秒级延迟"""
+
+    async def stream():
+        queue = secpoller.subscribe()
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            secpoller.unsubscribe(queue)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ---------------- 生产模式：托管前端构建产物 ----------------

@@ -29,6 +29,21 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastSecHitId = useRef<number | null>(null)
 
+  /** SEC 新财报弹窗（SSE 与轮询共用，按命中 id 去重） */
+  const notifySecHit = useCallback((h: SecHit) => {
+    if (lastSecHitId.current !== null && h.id !== undefined && h.id <= lastSecHitId.current) return
+    lastSecHitId.current = Math.max(lastSecHitId.current ?? 0, h.id ?? 0)
+    const isEarnings8k = h.form.startsWith('8-K')
+    toast.success(isEarnings8k ? `${h.ticker} 发布业绩公告（8-K）` : `${h.ticker} 发布 ${h.form} 财报`, {
+      description: `申报日期 ${h.filing_date}`,
+      duration: 15000,
+      action: h.url
+        ? { label: '查看原文', onClick: () => window.open(h.url, '_blank') }
+        : undefined,
+    })
+  }, [])
+
+  // 后端 SSE 实时推送：财报命中即刻弹窗（无轮询延迟）；断线时由下方轮询兜底
   const refresh = useCallback(async (silent = false) => {
     try {
       const [m, p, s] = await Promise.all([api.monitors(), api.prices(), api.secHits()])
@@ -36,33 +51,39 @@ export default function Dashboard({ username, onLogout }: { username: string; on
       setPriceInfo(p)
       setSecHits(s.items)
       setSecStatus(s.status)
-      // 新捕获的财报（非存量）第一时间弹窗，任意页面都会提醒
+      // 轮询兜底：SSE 漏掉/断线期间的命中在这里补弹（notifySecHit 内部按 id 去重）
       const fresh = s.items.filter((h) => !h.baseline)
       const maxId = fresh.length ? Math.max(...fresh.map((h) => h.id)) : 0
       if (lastSecHitId.current === null) {
         lastSecHitId.current = maxId
-      } else if (maxId > lastSecHitId.current) {
+      } else {
         for (const h of fresh.filter((x) => x.id > lastSecHitId.current!).reverse()) {
-          const isEarnings8k = h.form.startsWith('8-K')
-          toast.success(
-            isEarnings8k ? `${h.ticker} 发布业绩公告（8-K）` : `${h.ticker} 发布 ${h.form} 财报`,
-            {
-              description: `申报日期 ${h.filing_date}`,
-              duration: 15000,
-              action: h.url
-                ? { label: '查看原文', onClick: () => window.open(h.url, '_blank') }
-                : undefined,
-            }
-          )
+          notifySecHit(h)
         }
-        lastSecHitId.current = maxId
       }
     } catch (err) {
       if (!silent) toast.error(err instanceof Error ? err.message : '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [notifySecHit])
+
+  // 后端 SSE 实时推送：财报命中即刻弹窗（无轮询延迟）；断线时由轮询兜底
+  useEffect(() => {
+    const es = new EventSource('/api/sec/events')
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data)
+        if (data?.type === 'sec_hit' && data.hit) {
+          notifySecHit(data.hit as SecHit)
+          refresh(true)
+        }
+      } catch {
+        /* 非 JSON 消息忽略 */
+      }
+    }
+    return () => es.close()
+  }, [notifySecHit, refresh])
 
   useEffect(() => {
     refresh()

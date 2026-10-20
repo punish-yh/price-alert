@@ -385,6 +385,14 @@ def ticker_has_seen(ticker: str) -> bool:
     return row is not None
 
 
+def last_hit_id(accession: str) -> int | None:
+    with _lock:
+        row = _conn.execute(
+            "SELECT id FROM sec_hits WHERE accession=?", (accession,)
+        ).fetchone()
+    return row["id"] if row else None
+
+
 def known_accessions(tickers: list[str]) -> set[str]:
     if not tickers:
         return set()

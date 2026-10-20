@@ -35,6 +35,27 @@ sec_status: dict = {
     "poll_interval": config.SEC_POLL_INTERVAL,
 }
 
+# SSE 订阅者：新财报命中时实时推送给网页，替代（并兜底）前端轮询
+_subscribers: set[asyncio.Queue] = set()
+
+
+def subscribe() -> asyncio.Queue:
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _subscribers.add(q)
+    return q
+
+
+def unsubscribe(q: asyncio.Queue) -> None:
+    _subscribers.discard(q)
+
+
+def publish(event: dict) -> None:
+    for q in list(_subscribers):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:  # noqa: PERF203 - 客户端掉线即丢弃
+            pass
+
 _TICKER_MAP_TTL = 86400  # CIK 映射缓存 24 小时
 _ticker_map: dict[str, int] = {}
 
@@ -297,6 +318,19 @@ def _record_hit(task: dict, ticker: str, f: dict, known: set[str]) -> None:
             log.info("SEC 存量记录 %s %s (%s)", ticker, f["form"], f["filing_date"])
         else:
             log.info("SEC 新财报命中 %s %s (%s)", ticker, f["form"], f["filing_date"])
+            publish(
+                {
+                    "type": "sec_hit",
+                    "hit": {
+                        "id": database.last_hit_id(f["accession"]),
+                        "task_id": task["id"],
+                        "ticker": ticker,
+                        "form": f["form"],
+                        "filing_date": f["filing_date"],
+                        "url": f["url"],
+                    },
+                }
+            )
 
 
 async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]:

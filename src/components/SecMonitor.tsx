@@ -52,18 +52,18 @@ const FORM_OPTIONS = [
 function SecTaskDialog({ initial, onSaved }: { initial?: SecTask; onSaved: () => void }) {
   const [open, setOpen] = useState(false)
   const [tickers, setTickers] = useState('')
-  const [forms, setForms] = useState<string[]>(FORM_OPTIONS.map((f) => f.value))
+  const [forms, setForms] = useState<string[]>(['8-K'])
   const [watchDate, setWatchDate] = useState(todayStr)
   const [windowStart, setWindowStart] = useState('20:00')
   const [windowEnd, setWindowEnd] = useState('06:00')
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // 打开对话框时初始化：编辑用现有值；新建默认「监听日期=今天，窗口=未来 1~21 分钟，类型全选」
+  // 打开对话框时初始化：编辑用现有值；新建默认「监听日期=今天，窗口=未来 1~21 分钟，仅 8-K 业绩公告」
   useEffect(() => {
     if (!open) return
     setTickers(initial ? initial.tickers.join(', ') : '')
-    setForms(initial ? [...initial.forms] : FORM_OPTIONS.map((f) => f.value))
+    setForms(initial ? [...initial.forms] : ['8-K'])
     setWatchDate(initial?.watch_date || todayStr())
     setWindowStart(initial?.window_start || nowHM(1))
     setWindowEnd(initial?.window_end || nowHM(21))
