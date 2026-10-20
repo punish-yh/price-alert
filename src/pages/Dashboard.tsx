@@ -43,13 +43,17 @@ export default function Dashboard({ username, onLogout }: { username: string; on
         lastSecHitId.current = maxId
       } else if (maxId > lastSecHitId.current) {
         for (const h of fresh.filter((x) => x.id > lastSecHitId.current!).reverse()) {
-          toast.success(`${h.ticker} 发布 ${h.form} 财报`, {
-            description: `申报日期 ${h.filing_date}`,
-            duration: 15000,
-            action: h.url
-              ? { label: '查看原文', onClick: () => window.open(h.url, '_blank') }
-              : undefined,
-          })
+          const isEarnings8k = h.form.startsWith('8-K')
+          toast.success(
+            isEarnings8k ? `${h.ticker} 发布业绩公告（8-K）` : `${h.ticker} 发布 ${h.form} 财报`,
+            {
+              description: `申报日期 ${h.filing_date}`,
+              duration: 15000,
+              action: h.url
+                ? { label: '查看原文', onClick: () => window.open(h.url, '_blank') }
+                : undefined,
+            }
+          )
         }
         lastSecHitId.current = maxId
       }

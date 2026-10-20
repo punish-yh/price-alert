@@ -42,7 +42,11 @@ _FEED_URL = (
     "https://www.sec.gov/cgi-bin/browse-edgar"
     "?action=getcurrent&CIK=&type={form}&company=&dateb=&owner=include&start=0&count=100&output=atom"
 )
-_FEED_FORMS = ("10-Q", "10-K")  # feed 的 type=10-Q 会同时返回 10-Q/A 修订版
+# 支持的监听类型（任务可多选）；8-K 只有 Item 2.02 业绩公告才通知
+FORM_TYPES = ("10-Q", "10-K", "8-K")
+EARNINGS_ITEM = "Item 2.02"
+# 首次回填时每种类型的最大存量条数（8-K 量大，防止无限增长）
+_BACKFILL_PER_TYPE = 30
 _ATOM_NS = {"a": "http://www.w3.org/2005/Atom"}
 _CIK_RE = re.compile(r"\((\d{10})\)")
 _FILED_RE = re.compile(r"Filed:</b>\s*(\d{4}-\d{2}-\d{2})")
@@ -215,17 +219,34 @@ async def _fetch_feed(client: httpx.AsyncClient, form_type: str) -> list[dict]:
 
 
 async def _fetch_filings(client: httpx.AsyncClient, cik: int) -> list[dict]:
-    """拉取某公司近期申报（仅用于标的首次监听时的存量回填），返回 10-Q/10-K 类条目"""
+    """拉取某公司近期申报（仅用于标的首次监听时的存量回填）。
+
+    返回 10-Q/10-K 全部 + 8-K 中只有 Item 2.02 业绩公告的条目，每种类型最多 _BACKFILL_PER_TYPE 条；
+    8-K 的 items 取自 submissions 数据，不产生额外请求。
+    """
     resp = await _sec_get(
         client, f"https://data.sec.gov/submissions/CIK{cik:010d}.json", timeout=15
     )
     resp.raise_for_status()
     recent = resp.json().get("filings", {}).get("recent", {})
     forms = recent.get("form", [])
-    out = []
+    items = recent.get("items") or [""] * len(forms)
+    out: list[dict] = []
+    counts: dict[str, int] = {}
     for i, form in enumerate(forms):
-        if not (form.startswith("10-Q") or form.startswith("10-K")):
+        base = form.split("/")[0]
+        if base not in FORM_TYPES:
             continue
+        earnings = False
+        if base == "8-K":
+            if counts.get("8-K", 0) >= _BACKFILL_PER_TYPE:
+                continue
+            if "2.02" not in (items[i] or ""):
+                continue
+            earnings = True
+        elif counts.get(base, 0) >= _BACKFILL_PER_TYPE:
+            continue
+        counts[base] = counts.get(base, 0) + 1
         accession = recent["accessionNumber"][i]
         primary_doc = (recent.get("primaryDocument") or [""] * len(forms))[i]
         url = (
@@ -241,9 +262,18 @@ async def _fetch_filings(client: httpx.AsyncClient, cik: int) -> list[dict]:
                 "accession": accession,
                 "primary_doc": primary_doc,
                 "url": url,
+                "earnings": earnings,
             }
         )
     return out
+
+
+async def _check_8k_earnings(client: httpx.AsyncClient, index_url: str) -> bool:
+    """抓取 8-K 的申报索引页，确认包含 Item 2.02（业绩公告）"""
+    if not index_url:
+        return False
+    resp = await _sec_get(client, index_url, timeout=15)
+    return EARNINGS_ITEM in resp.text
 
 
 def _record_hit(task: dict, ticker: str, f: dict, known: set[str]) -> None:
@@ -270,10 +300,14 @@ def _record_hit(task: dict, ticker: str, f: dict, known: set[str]) -> None:
 
 
 async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]:
-    """对窗口内的任务执行一轮抓取，返回本轮错误信息列表"""
+    """对窗口内的任务执行一轮抓取，返回本轮错误信息列表
+
+    - 任务按勾选的类型（10-Q/10-K/8-K）过滤，feed 每类型一个请求
+    - 8-K 先记为已检查，再抓取其索引页确认含 Item 2.02 才通知（非业绩公告不打扰）
+    """
     tmap = await get_ticker_map(client)
     tickers = sorted({tk for t in tasks for tk in t["tickers"]})
-    known = database.known_accessions(tickers)
+    known = database.seen_accessions(tickers)
     errors: list[str] = []
 
     # cik -> 关心它的 (task, ticker) 列表
@@ -286,30 +320,59 @@ async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]
                 continue
             watch.setdefault(cik, []).append((task, ticker))
 
-    # 首次监听的标的：单独补一次该公司 submissions，把存量财报记为 baseline
+    # 首次监听的标的：补一次该公司 submissions 作为存量（10-Q/10-K 全量、8-K 仅业绩公告）
     for cik, pairs in watch.items():
         ticker = pairs[0][1]
-        if database.ticker_has_hits(ticker):
+        if database.ticker_has_seen(ticker):
             continue
         try:
             filings = await _fetch_filings(client, cik)
         except Exception as e:  # noqa: BLE001 - 单 ticker 失败不影响其他
             errors.append(f"{ticker}: {str(e)[:100]}")
             continue
+        for f in filings:
+            database.add_seen(f["accession"], ticker, f["form"], is_hit=True, earnings=f["earnings"])
         for task, tk in pairs:
             for f in filings:
+                if f["form"].split("/")[0] not in task["forms"]:
+                    continue
                 _record_hit(task, tk, f, known)
 
-    # 全市场 feed：每类一个请求，覆盖所有标的
-    for form_type in _FEED_FORMS:
+    # 全市场 feed：按任务勾选类型各发一个请求，覆盖所有标的
+    forms_wanted = sorted({fm for t in tasks for fm in t["forms"]})
+    for form_type in forms_wanted:
         try:
             entries = await _fetch_feed(client, form_type)
         except Exception as e:  # noqa: BLE001
             errors.append(f"{form_type} feed: {str(e)[:100]}")
             continue
         for f in entries:
-            for task, ticker in watch.get(f["cik"], []):
-                _record_hit(task, ticker, f, known)
+            pairs = watch.get(f["cik"])
+            if not pairs:
+                continue
+            base = f["form"].split("/")[0]
+            interested = [(task, tk) for task, tk in pairs if base in task["forms"]]
+            if not interested:
+                continue
+            if f["accession"] in known:
+                continue
+            if base == "8-K":
+                # 候选 8-K：先记为已检查（防每轮重复请求），再确认是否业绩公告
+                database.add_seen(f["accession"], interested[0][1], f["form"], is_hit=False)
+                try:
+                    earnings = await _check_8k_earnings(client, f["url"])
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"8-K 检查失败: {str(e)[:80]}")
+                    continue
+                if not earnings:
+                    log.info("SEC 8-K 非业绩公告，忽略 %s (%s)", interested[0][1], f["accession"])
+                    known.add(f["accession"])  # 同一轮内其他任务不再重复检查
+                    continue
+                database.mark_seen_hit(f["accession"])
+            else:
+                database.add_seen(f["accession"], interested[0][1], f["form"], is_hit=True)
+            for task, tk in interested:
+                _record_hit(task, tk, f, known)
     return errors
 
 

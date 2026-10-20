@@ -212,6 +212,7 @@ WINDOW_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 class SecTaskCreate(BaseModel):
     tickers: list[str] = Field(min_length=1, max_length=20)
+    forms: list[str] = Field(min_length=1, max_length=3)
     watch_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     window_start: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     window_end: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -228,12 +229,16 @@ async def sec_tasks(user: str = auth.CurrentUser):
     return {"items": items}
 
 
-async def _validate_sec_body(body: SecTaskCreate) -> list[str]:
-    """校验 SEC 任务字段并返回规范化后的代码列表"""
+async def _validate_sec_body(body: SecTaskCreate) -> tuple[list[str], list[str]]:
+    """校验 SEC 任务字段并返回规范化后的 (代码列表, 监听类型列表)"""
     try:
         datetime.strptime(body.watch_date, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(400, "监听日期格式不正确")
+    forms = sorted({f.strip().upper() for f in body.forms if f.strip()})
+    bad_forms = [f for f in forms if f not in secpoller.FORM_TYPES]
+    if not forms or bad_forms:
+        raise HTTPException(400, f"监听类型仅支持：{', '.join(secpoller.FORM_TYPES)}")
     tickers = sorted({t.upper().strip() for t in body.tickers if t.strip()})
     if not tickers:
         raise HTTPException(400, "至少填写一个标的代码")
@@ -250,7 +255,7 @@ async def _validate_sec_body(body: SecTaskCreate) -> list[str]:
         raise
     except Exception as e:  # noqa: BLE001 - 映射拉取失败时放行
         logging.getLogger("main").warning("SEC ticker 映射校验跳过: %s", e)
-    return tickers
+    return tickers, forms
 
 
 @app.post("/api/sec/tasks", status_code=status.HTTP_201_CREATED)
@@ -259,9 +264,9 @@ async def sec_task_create(
     user: str = auth.CurrentUser,
     _: None = auth.CsrfGuard,
 ):
-    tickers = await _validate_sec_body(body)
+    tickers, forms = await _validate_sec_body(body)
     return database.create_sec_task(
-        tickers, body.watch_date, body.window_start, body.window_end, body.note.strip()
+        tickers, body.watch_date, body.window_start, body.window_end, body.note.strip(), forms
     )
 
 
@@ -275,9 +280,9 @@ async def sec_task_update(
     task = database.get_sec_task(task_id)
     if task is None or task["status"] != "active":
         raise HTTPException(404, "监听任务不存在")
-    tickers = await _validate_sec_body(body)
+    tickers, forms = await _validate_sec_body(body)
     database.update_sec_task(
-        task_id, tickers, body.watch_date, body.window_start, body.window_end, body.note.strip()
+        task_id, tickers, body.watch_date, body.window_start, body.window_end, body.note.strip(), forms
     )
     return database.get_sec_task(task_id)
 

@@ -53,10 +53,12 @@ def init_db() -> None:
             _conn.execute("ALTER TABLE monitors ADD COLUMN ema_period INTEGER")
         if "interval" not in cols:
             _conn.execute("ALTER TABLE monitors ADD COLUMN interval TEXT")
-        # 兼容旧库：sec_tasks 增加监听日期列
+        # 兼容旧库：sec_tasks 增加监听日期列与监听类型列
         cols_sec = {r["name"] for r in _conn.execute("PRAGMA table_info(sec_tasks)")}
         if "watch_date" not in cols_sec:
             _conn.execute("ALTER TABLE sec_tasks ADD COLUMN watch_date TEXT")
+        if "forms" not in cols_sec:
+            _conn.execute("ALTER TABLE sec_tasks ADD COLUMN forms TEXT")
         _conn.execute(
             """
             CREATE TABLE IF NOT EXISTS tv_forwards (
@@ -105,6 +107,20 @@ def init_db() -> None:
             """
         )
         _conn.execute("CREATE INDEX IF NOT EXISTS idx_sec_hits_time ON sec_hits(detected_at)")
+        # 已检查过的申报去重表：8-K 非业绩公告只检查一次，避免每轮重复请求
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sec_seen (
+                accession TEXT    PRIMARY KEY,
+                ticker    TEXT    NOT NULL,
+                form      TEXT    NOT NULL,
+                is_hit    INTEGER NOT NULL DEFAULT 0,
+                earnings  INTEGER NOT NULL DEFAULT 0,
+                seen_at   TEXT    NOT NULL
+            )
+            """
+        )
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_sec_seen_ticker ON sec_seen(ticker)")
 
 
 def _now() -> str:
@@ -250,18 +266,26 @@ def delete_tv_forward(record_id: int) -> bool:
 def _sec_task_row(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["tickers"] = json.loads(d["tickers"])
+    # 旧任务无监听类型列时按 10-Q/10-K 兼容
+    d["forms"] = json.loads(d["forms"]) if d.get("forms") else ["10-Q", "10-K"]
     return d
 
 
 def create_sec_task(
-    tickers: list[str], watch_date: str, window_start: str, window_end: str, note: str
+    tickers: list[str],
+    watch_date: str,
+    window_start: str,
+    window_end: str,
+    note: str,
+    forms: list[str],
 ) -> dict[str, Any]:
     now = _now()
     with _lock, _conn:
         cur = _conn.execute(
-            """INSERT INTO sec_tasks (tickers, watch_date, window_start, window_end, note, status, created_at, updated_at)
-               VALUES (?,?,?,?,?, 'active', ?, ?)""",
-            (json.dumps(tickers), watch_date, window_start, window_end, note, now, now),
+            """INSERT INTO sec_tasks (tickers, watch_date, window_start, window_end, note, forms, status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?, 'active', ?, ?)""",
+            (json.dumps(tickers), watch_date, window_start, window_end, note,
+             json.dumps(forms), now, now),
         )
         task_id = cur.lastrowid
     return get_sec_task(task_id)  # type: ignore[return-value]
@@ -297,16 +321,68 @@ def delete_sec_task(task_id: int) -> bool:
 
 
 def update_sec_task(
-    task_id: int, tickers: list[str], watch_date: str, window_start: str, window_end: str, note: str
+    task_id: int,
+    tickers: list[str],
+    watch_date: str,
+    window_start: str,
+    window_end: str,
+    note: str,
+    forms: list[str],
 ) -> bool:
     with _lock, _conn:
         cur = _conn.execute(
             """UPDATE sec_tasks
-               SET tickers=?, watch_date=?, window_start=?, window_end=?, note=?, updated_at=?
+               SET tickers=?, watch_date=?, window_start=?, window_end=?, note=?, forms=?, updated_at=?
                WHERE id=? AND status='active'""",
-            (json.dumps(tickers), watch_date, window_start, window_end, note, _now(), task_id),
+            (json.dumps(tickers), watch_date, window_start, window_end, note,
+             json.dumps(forms), _now(), task_id),
         )
         return cur.rowcount > 0
+
+
+# ---------------- SEC 申报去重（sec_seen） ----------------
+
+def seen_accessions(tickers: list[str]) -> set[str]:
+    """已检查过的申报（sec_seen + 历史 sec_hits 并集）"""
+    if not tickers:
+        return set()
+    marks = ",".join("?" for _ in tickers)
+    with _lock:
+        rows = _conn.execute(
+            f"SELECT accession FROM sec_seen WHERE ticker IN ({marks})", tickers
+        ).fetchall()
+        rows2 = _conn.execute(
+            f"SELECT accession FROM sec_hits WHERE ticker IN ({marks})", tickers
+        ).fetchall()
+    return {r["accession"] for r in rows} | {r["accession"] for r in rows2}
+
+
+def add_seen(accession: str, ticker: str, form: str, is_hit: bool, earnings: bool = False) -> bool:
+    with _lock, _conn:
+        cur = _conn.execute(
+            """INSERT OR IGNORE INTO sec_seen (accession, ticker, form, is_hit, earnings, seen_at)
+               VALUES (?,?,?,?,?,?)""",
+            (accession, ticker, form, 1 if is_hit else 0, 1 if earnings else 0, _now()),
+        )
+        return cur.rowcount > 0
+
+
+def mark_seen_hit(accession: str) -> None:
+    with _lock, _conn:
+        _conn.execute("UPDATE sec_seen SET is_hit=1 WHERE accession=?", (accession,))
+
+
+def ticker_has_seen(ticker: str) -> bool:
+    """该标的是否已有任何已检查记录（用于首次回填判定）"""
+    with _lock:
+        row = _conn.execute(
+            "SELECT 1 FROM sec_seen WHERE ticker=? LIMIT 1", (ticker,)
+        ).fetchone()
+        if row is None:
+            row = _conn.execute(
+                "SELECT 1 FROM sec_hits WHERE ticker=? LIMIT 1", (ticker,)
+            ).fetchone()
+    return row is not None
 
 
 def known_accessions(tickers: list[str]) -> set[str]:
