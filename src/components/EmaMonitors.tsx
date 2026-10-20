@@ -141,7 +141,7 @@ function EmaDialog({ initial, onSaved }: { initial?: Monitor; onSaved: () => voi
           <DialogTitle>{initial ? '编辑 EMA 均线监控' : '新建 EMA 均线监控'}</DialogTitle>
           <DialogDescription>
             在选定周期的每根 K 线收盘时检查一次：收盘价上穿、下穿，或影线触及（插针）所选 EMA
-            均线即触发一次告警。价格为现货与 USDT 永续合约按成交额加权的综合价。
+            均线即触发一次告警。价格取「合约优先」：有 USDT 永续合约看合约价，无合约用现货价。
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">

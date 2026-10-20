@@ -116,8 +116,8 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
         <DialogHeader>
           <DialogTitle>{initial ? '编辑价格监控' : '新建价格监控'}</DialogTitle>
           <DialogDescription>
-            每 5 分钟检查一次 5 分钟 K 线。标准价为现货与 USDT 永续合约按成交额加权的综合价
-            （一边不存在时自动忽略）。综合 K 线的 开 / 收 / 高 / 低
+            每 5 分钟检查一次 5 分钟 K 线。价格取「合约优先」：该交易对有 USDT
+            永续合约就看合约价，没有合约才用现货价。K 线的 开 / 收 / 高 / 低
             任一价格触及目标价即触发一次饭碗告警通知。
           </DialogDescription>
         </DialogHeader>

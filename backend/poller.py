@@ -1,17 +1,17 @@
 """Binance K线轮询与触发告警
 
-标准价 = 现货与 USDT 永续合约按成交额（quoteVolume）加权的综合价：
+标准价（合约优先）：
 - 每 POLL_INTERVAL 秒（默认 5 分钟）对每个被监控的交易对同时拉取现货和合约的 5m K 线（最近 2 根）
-- 现货或合约某一边不存在/不可达时，自动退化为只用另一边
+- 该交易对有 USDT 永续合约 → 只看合约价；没有合约 → 用现货价（price_source 记录来源）
 
 告警类型一（type=price）：价格触及目标价
-- 判定规则：综合 K 线的 开/收/高/低 四个价格中，任意一个满足方向条件即触发
+- 判定规则：K 线的 开/收/高/低 四个价格中，任意一个满足方向条件即触发
   - direction=above：max(开,收,高,低) >= 目标价
   - direction=below：min(开,收,高,低) <= 目标价
 - 同时检查「最近一根已收盘 K 线」和「正在走的 K 线」，窗口内瞬时插针也能捕获
 
 告警类型二（type=ema_cross）：EMA 均线穿越
-- 支持 EMA21/55/100/200，周期 15m/1h/4h/1d；EMA 基于综合价收盘价序列计算
+- 支持 EMA21/55/100/200，周期 15m/1h/4h/1d；EMA 基于合约优先的收盘价序列计算
 - 只在对应周期出现新收盘 K 线时评估一次（启动后首轮只记录水位，不补发历史信号）
 - 上穿（收盘从 EMA 下方到上方）、下穿（反向）、插针（K线高低区间覆盖 EMA）均触发
 
@@ -178,24 +178,28 @@ def _merge_candle(spot: dict | None, fut: dict | None) -> dict:
     }
 
 
-def combine_series(spot: list[dict] | None, fut: list[dict] | None) -> list[dict]:
-    """按 open_time 对齐合成综合 K 线完整序列（供 EMA 等需要历史的计算使用）"""
-    out = []
-    fut_by_t = {c["open_time"]: c for c in fut or []}
-    spot_times = set()
-    for sc in spot or []:
-        spot_times.add(sc["open_time"])
-        out.append(_merge_candle(sc, fut_by_t.get(sc["open_time"])))
-    for fc in fut or []:
-        if fc["open_time"] not in spot_times:
-            out.append(_merge_candle(None, fc))
+def select_series(spot: list[dict] | None, fut: list[dict] | None) -> list[dict]:
+    """合约优先选择 K 线序列：有 USDT 永续合约只用合约价；无合约用现货价。
+
+    返回的 K 线带 price_source 标记（futures/spot），供告警文案说明价格来源。
+    """
+    if fut:
+        out = [_merge_candle(None, c) for c in fut]
+        for c in out:
+            c["price_source"] = "futures"
+    elif spot:
+        out = [_merge_candle(c, None) for c in spot]
+        for c in out:
+            c["price_source"] = "spot"
+    else:
+        return []
     out.sort(key=lambda c: c["open_time"])
     return out
 
 
-def combine_candles(spot: list[dict] | None, fut: list[dict] | None) -> list[dict]:
-    """按 open_time 对齐合成综合 K 线序列，返回最近 2 根"""
-    return combine_series(spot, fut)[-2:]
+def select_candles(spot: list[dict] | None, fut: list[dict] | None, limit: int = 2) -> list[dict]:
+    """合约优先，返回最近 limit 根 K 线（供价格触发性判定）"""
+    return select_series(spot, fut)[-limit:]
 
 
 # ---------------- EMA 均线穿越监控 ----------------
@@ -250,6 +254,10 @@ async def _send_webhook(
     basis = (
         "现货+合约加权综合价"
         if candle.get("fused")
+        else "合约价（合约优先）"
+        if candle.get("price_source") == "futures"
+        else "现货价（该交易对无合约或合约不可达）"
+        if candle.get("price_source") == "spot"
         else ("仅现货价（该交易对无合约或合约不可达）" if candle.get("spot_close") is not None else "仅合约价（无现货或现货不可达）")
     )
     text = (
@@ -316,6 +324,10 @@ async def _send_ema_webhook(
     basis = (
         "现货+合约加权综合价"
         if candle.get("fused")
+        else "合约价（合约优先）"
+        if candle.get("price_source") == "futures"
+        else "现货价（该交易对无合约或合约不可达）"
+        if candle.get("price_source") == "spot"
         else ("仅现货价（该交易对无合约或合约不可达）" if candle.get("spot_close") is not None else "仅合约价（无现货或现货不可达）")
     )
     text = (
@@ -399,7 +411,7 @@ async def _poll_ema(client: httpx.AsyncClient, active: list[dict]) -> None:
         if not spot and not fut:
             log.warning("交易对 %s %s 现货与合约均不可用，跳过 EMA 本轮", sym, interval)
             continue
-        closed = combine_series(spot, fut)[:-1]  # 最后一根为未收盘 K 线，剔除
+        closed = select_series(spot, fut)[:-1]  # 最后一根为未收盘 K 线，剔除
         if len(closed) < 2:
             continue
         key = (sym, interval)
@@ -446,7 +458,7 @@ async def poller_loop() -> None:
                     if not spot and not fut:
                         log.warning("交易对 %s 现货与合约均不可用，跳过本轮", sym)
                         continue
-                    candles = combine_candles(spot, fut)
+                    candles = select_candles(spot, fut)
                     if candles:
                         last_prices[sym] = (candles[-1]["close"], time.time())
                     for m in price_monitors:
