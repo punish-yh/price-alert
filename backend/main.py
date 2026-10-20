@@ -116,12 +116,8 @@ async def mark_price_triggered_read(
     return {"ok": True, "unread_triggered": database.unread_triggered_count()}
 
 
-@app.post("/api/monitors", status_code=status.HTTP_201_CREATED)
-async def create_monitor(
-    body: MonitorCreate,
-    user: str = auth.CurrentUser,
-    _: None = auth.CsrfGuard,
-):
+def _monitor_params(body: MonitorCreate) -> tuple[str, str, float, int | None, str | None]:
+    """校验监控参数并返回规范化后的 (symbol, direction, target_price, ema_period, interval)"""
     symbol = body.symbol.upper().strip()
     if not SYMBOL_RE.match(symbol):
         raise HTTPException(400, "交易对格式不正确，例如 BTCUSDT")
@@ -130,15 +126,46 @@ async def create_monitor(
             raise HTTPException(400, f"EMA 周期仅支持：{', '.join(map(str, poller.EMA_PERIODS))}")
         if body.interval not in poller.EMA_INTERVALS:
             raise HTTPException(400, f"K 线周期仅支持：{', '.join(poller.EMA_INTERVALS)}")
-        m = database.create_monitor(
-            symbol, "above", 0, body.note.strip(),
-            type="ema_cross", ema_period=body.ema_period, interval=body.interval,
-        )
-        return m
+        return symbol, "above", 0, body.ema_period, body.interval
     if body.target_price <= 0:
         raise HTTPException(400, "目标价必须大于 0")
-    m = database.create_monitor(symbol, body.direction, body.target_price, body.note.strip())
-    return m
+    return symbol, body.direction, body.target_price, None, None
+
+
+@app.post("/api/monitors", status_code=status.HTTP_201_CREATED)
+async def create_monitor(
+    body: MonitorCreate,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    symbol, direction, target_price, ema_period, interval = _monitor_params(body)
+    if body.type == "ema_cross":
+        return database.create_monitor(
+            symbol, direction, target_price, body.note.strip(),
+            type="ema_cross", ema_period=ema_period, interval=interval,
+        )
+    return database.create_monitor(symbol, direction, target_price, body.note.strip())
+
+
+@app.post("/api/monitors/{monitor_id}/update")
+async def update_monitor(
+    monitor_id: int,
+    body: MonitorCreate,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    m = database.get_monitor(monitor_id)
+    if m is None:
+        raise HTTPException(404, "监控不存在")
+    if m["status"] != "active":
+        raise HTTPException(400, "仅活跃状态的监控可以编辑，请先重新激活")
+    if body.type != m["type"]:
+        raise HTTPException(400, "不能修改监控类型")
+    symbol, direction, target_price, ema_period, interval = _monitor_params(body)
+    database.update_monitor(
+        monitor_id, symbol, direction, target_price, ema_period, interval, body.note.strip()
+    )
+    return database.get_monitor(monitor_id)
 
 
 @app.post("/api/monitors/{monitor_id}/delete")

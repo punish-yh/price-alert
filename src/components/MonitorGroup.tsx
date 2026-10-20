@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { fmtPrice, fmtTime } from '@/lib/api'
 import type { Monitor } from '@/types'
+import MonitorDialog from '@/components/CreateMonitorDialog'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,11 +36,12 @@ interface Props {
   symbol: string
   monitors: Monitor[]
   price?: number
+  onChanged: () => void
   onDelete: (id: number) => Promise<void>
   onRestore: (id: number) => Promise<void>
 }
 
-export default function MonitorGroup({ symbol, monitors, price, onDelete, onRestore }: Props) {
+export default function MonitorGroup({ symbol, monitors, price, onChanged, onDelete, onRestore }: Props) {
   const prevPrice = useRef<number | undefined>(undefined)
   const [tick, setTick] = useState<'up' | 'down' | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
@@ -139,6 +141,14 @@ export default function MonitorGroup({ symbol, monitors, price, onDelete, onRest
 
               <span className="ml-auto flex items-center gap-1.5">
                 {busyId === m.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+
+                {m.status === 'active' && (
+                  <MonitorDialog
+                    initial={m}
+                    prices={price !== undefined ? { [m.symbol]: price } : {}}
+                    onSaved={onChanged}
+                  />
+                )}
 
                 {m.status !== 'active' && (
                   <Button

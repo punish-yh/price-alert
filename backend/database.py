@@ -170,6 +170,26 @@ def create_monitor(
     return get_monitor(monitor_id)  # type: ignore[return-value]
 
 
+def update_monitor(
+    monitor_id: int,
+    symbol: str,
+    direction: str,
+    target_price: float,
+    ema_period: int | None,
+    interval: str | None,
+    note: str,
+) -> bool:
+    """仅活跃监控可编辑；触发/删除状态请先重新激活"""
+    with _lock, _conn:
+        cur = _conn.execute(
+            """UPDATE monitors
+               SET symbol=?, direction=?, target_price=?, ema_period=?, interval=?, note=?, updated_at=?
+               WHERE id=? AND status='active'""",
+            (symbol.upper(), direction, target_price, ema_period, interval, note, _now(), monitor_id),
+        )
+        return cur.rowcount > 0
+
+
 def soft_or_hard_delete(monitor_id: int) -> str:
     """active/triggered -> deleted；deleted -> 物理删除。返回 'deleted' | 'purged' | 'missing'"""
     with _lock, _conn:

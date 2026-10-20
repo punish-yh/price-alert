@@ -55,6 +55,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ...body, type: 'ema_cross' }),
     }),
+  updateMonitor: (
+    id: number,
+    body: {
+      symbol: string
+      direction: 'above' | 'below'
+      target_price: number
+      note: string
+    }
+  ) => request<Monitor>(`/api/monitors/${id}/update`, { method: 'POST', body: JSON.stringify(body) }),
+  updateEmaMonitor: (
+    id: number,
+    body: { symbol: string; ema_period: number; interval: string; note: string }
+  ) =>
+    request<Monitor>(`/api/monitors/${id}/update`, {
+      method: 'POST',
+      body: JSON.stringify({ ...body, type: 'ema_cross' }),
+    }),
   deleteMonitor: (id: number) =>
     request<{ ok: boolean; result: 'deleted' | 'purged' }>(`/api/monitors/${id}/delete`, {
       method: 'POST',

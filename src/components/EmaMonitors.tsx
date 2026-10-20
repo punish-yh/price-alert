@@ -3,6 +3,7 @@ import {
   Activity,
   BellRing,
   Loader2,
+  Pencil,
   Plus,
   RotateCcw,
   Trash2,
@@ -60,7 +61,7 @@ const STATUS_META: Record<MonitorStatus, { label: string; cls: string }> = {
   deleted: { label: '已删除', cls: 'bg-zinc-100 text-zinc-500 border-zinc-200' },
 }
 
-function CreateEmaDialog({ onCreated }: { onCreated: () => void }) {
+function EmaDialog({ initial, onSaved }: { initial?: Monitor; onSaved: () => void }) {
   const [open, setOpen] = useState(false)
   const [symbol, setSymbol] = useState('')
   const [interval, setInterval_] = useState('1h')
@@ -77,6 +78,14 @@ function CreateEmaDialog({ onCreated }: { onCreated: () => void }) {
       .catch(() => setSymbols([]))
   }, [open])
 
+  useEffect(() => {
+    if (!open) return
+    setSymbol(initial?.symbol || '')
+    setInterval_(initial?.interval || '1h')
+    setEmaPeriod(initial ? String(initial.ema_period) : '55')
+    setNote(initial?.note || '')
+  }, [open, initial])
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!symbol.trim()) {
@@ -85,19 +94,23 @@ function CreateEmaDialog({ onCreated }: { onCreated: () => void }) {
     }
     setSubmitting(true)
     try {
-      await api.createEmaMonitor({
+      const payload = {
         symbol: symbol.trim().toUpperCase(),
         ema_period: Number(emaPeriod),
         interval,
         note: note.trim(),
-      })
-      toast.success('EMA 监控已创建，将在下一根 K 线收盘后开始判定')
+      }
+      if (initial) {
+        await api.updateEmaMonitor(initial.id, payload)
+        toast.success('EMA 监控已更新')
+      } else {
+        await api.createEmaMonitor(payload)
+        toast.success('EMA 监控已创建，将在下一根 K 线收盘后开始判定')
+      }
       setOpen(false)
-      setSymbol('')
-      setNote('')
-      onCreated()
+      onSaved()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '创建失败')
+      toast.error(err instanceof Error ? err.message : '保存失败')
     } finally {
       setSubmitting(false)
     }
@@ -105,15 +118,27 @@ function CreateEmaDialog({ onCreated }: { onCreated: () => void }) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button className="bg-emerald-600 text-white hover:bg-emerald-500">
-          <Plus className="mr-1.5 h-4 w-4" />
-          新建 EMA 监控
+      {initial ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-xs text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+          onClick={() => setOpen(true)}
+        >
+          <Pencil className="mr-1 h-3.5 w-3.5" />
+          编辑
         </Button>
-      </DialogTrigger>
+      ) : (
+        <DialogTrigger asChild>
+          <Button className="bg-emerald-600 text-white hover:bg-emerald-500">
+            <Plus className="mr-1.5 h-4 w-4" />
+            新建 EMA 监控
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>新建 EMA 均线监控</DialogTitle>
+          <DialogTitle>{initial ? '编辑 EMA 均线监控' : '新建 EMA 均线监控'}</DialogTitle>
           <DialogDescription>
             在选定周期的每根 K 线收盘时检查一次：收盘价上穿、下穿，或影线触及（插针）所选 EMA
             均线即触发一次告警。价格为现货与 USDT 永续合约按成交额加权的综合价。
@@ -182,7 +207,7 @@ function CreateEmaDialog({ onCreated }: { onCreated: () => void }) {
           <DialogFooter>
             <Button type="submit" disabled={submitting}>
               {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              创建监控
+              {initial ? '保存修改' : '创建监控'}
             </Button>
           </DialogFooter>
         </form>
@@ -244,7 +269,7 @@ export default function EmaMonitors({ monitors, prices, onDelete, onRestore, onC
             ))}
           </TabsList>
         </Tabs>
-        <CreateEmaDialog onCreated={onChanged} />
+        <EmaDialog onSaved={onChanged} />
       </div>
 
       {groups.length === 0 ? (
@@ -313,6 +338,7 @@ export default function EmaMonitors({ monitors, prices, onDelete, onRestore, onC
                       {busyId === m.id && (
                         <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                       )}
+                      {m.status === 'active' && <EmaDialog initial={m} onSaved={onChanged} />}
                       {m.status !== 'active' && (
                         <Button
                           variant="ghost"

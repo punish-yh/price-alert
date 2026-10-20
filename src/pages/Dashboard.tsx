@@ -265,11 +265,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
               <h2 className="text-lg font-bold">价格监控</h2>
               <CreateMonitorDialog
                 prices={priceInfo?.prices || {}}
-                onCreated={() => {
-                  toast.success('监控已创建')
-                  refresh(true)
-                }}
-                onError={(msg) => toast.error(msg)}
+                onSaved={() => refresh(true)}
               />
             </div>
 
@@ -314,6 +310,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
                     symbol={symbol}
                     monitors={items}
                     price={priceInfo?.prices?.[symbol]}
+                    onChanged={() => refresh(true)}
                     onDelete={handleDelete}
                     onRestore={handleRestore}
                   />
