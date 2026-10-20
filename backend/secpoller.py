@@ -1,11 +1,11 @@
-"""SEC EDGAR 财报（10-Q/10-K）监听
+"""SEC EDGAR 财报（8-K 业绩公告）监听
 
 - 每个监听任务带一个北京时间窗口（支持跨夜），仅窗口内轮询 SEC，窗口外休眠
-- 轮询走 SEC 全市场最新申报 feed（browse-edgar getcurrent）：每轮仅 2 个请求
-  （10-Q、10-K 各一个，含 /A 修订版），即可覆盖窗口内所有标的，与标的数量无关
+- 轮询走 SEC 全市场最新申报 feed（browse-edgar getcurrent）：每轮仅 1 个请求
+  （8-K，含 /A 修订版），即可覆盖窗口内所有标的，与标的数量无关
 - 所有 SEC 请求共享一个令牌桶限速器（默认 10 req/s，SEC 公平使用政策上限）
 - ticker -> CIK 映射取自 SEC 官方 company_tickers.json，缓存到本地 24 小时
-- 标的首次被监听时单独补一次该公司 submissions，把存量 10-Q/10-K 记为 baseline（落库但不通知）
+- 标的首次被监听时单独补一次该公司 submissions，把存量 8-K 业绩公告记为 baseline（落库但不通知）
 - 按 accession number 去重；发现新文件只落库，由前端轮询拉到后第一时间弹窗，不发外部 webhook
 """
 import asyncio
@@ -63,8 +63,8 @@ _FEED_URL = (
     "https://www.sec.gov/cgi-bin/browse-edgar"
     "?action=getcurrent&CIK=&type={form}&company=&dateb=&owner=include&start=0&count=100&output=atom"
 )
-# 支持的监听类型（任务可多选）；8-K 只有 Item 2.02 业绩公告才通知
-FORM_TYPES = ("10-Q", "10-K", "8-K")
+# 支持的监听类型：仅 8-K，且只有 Item 2.02 业绩公告才通知
+FORM_TYPES = ("8-K",)
 EARNINGS_ITEM = "Item 2.02"
 # 首次回填时每种类型的最大存量条数（8-K 量大，防止无限增长）
 _BACKFILL_PER_TYPE = 30
@@ -242,8 +242,8 @@ async def _fetch_feed(client: httpx.AsyncClient, form_type: str) -> list[dict]:
 async def _fetch_filings(client: httpx.AsyncClient, cik: int) -> list[dict]:
     """拉取某公司近期申报（仅用于标的首次监听时的存量回填）。
 
-    返回 10-Q/10-K 全部 + 8-K 中只有 Item 2.02 业绩公告的条目，每种类型最多 _BACKFILL_PER_TYPE 条；
-    8-K 的 items 取自 submissions 数据，不产生额外请求。
+    只返回含 Item 2.02 业绩公告的 8-K，最多 _BACKFILL_PER_TYPE 条；
+    items 取自 submissions 数据，不产生额外请求。
     """
     resp = await _sec_get(
         client, f"https://data.sec.gov/submissions/CIK{cik:010d}.json", timeout=15
@@ -256,16 +256,9 @@ async def _fetch_filings(client: httpx.AsyncClient, cik: int) -> list[dict]:
     counts: dict[str, int] = {}
     for i, form in enumerate(forms):
         base = form.split("/")[0]
-        if base not in FORM_TYPES:
+        if base not in FORM_TYPES or counts.get(base, 0) >= _BACKFILL_PER_TYPE:
             continue
-        earnings = False
-        if base == "8-K":
-            if counts.get("8-K", 0) >= _BACKFILL_PER_TYPE:
-                continue
-            if "2.02" not in (items[i] or ""):
-                continue
-            earnings = True
-        elif counts.get(base, 0) >= _BACKFILL_PER_TYPE:
+        if "2.02" not in (items[i] or ""):
             continue
         counts[base] = counts.get(base, 0) + 1
         accession = recent["accessionNumber"][i]
@@ -283,7 +276,7 @@ async def _fetch_filings(client: httpx.AsyncClient, cik: int) -> list[dict]:
                 "accession": accession,
                 "primary_doc": primary_doc,
                 "url": url,
-                "earnings": earnings,
+                "earnings": True,
             }
         )
     return out
@@ -336,10 +329,13 @@ def _record_hit(task: dict, ticker: str, f: dict, known: set[str]) -> None:
 async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]:
     """对窗口内的任务执行一轮抓取，返回本轮错误信息列表
 
-    - 任务按勾选的类型（10-Q/10-K/8-K）过滤，feed 每类型一个请求
+    - 任务只监听 8-K，feed 每轮 1 个请求覆盖全部标的
     - 8-K 先记为已检查，再抓取其索引页确认含 Item 2.02 才通知（非业绩公告不打扰）
     """
     tmap = await get_ticker_map(client)
+    # 旧任务可能还勾着 10-Q/10-K：归一化为只监听 8-K
+    for t in tasks:
+        t["forms"] = [f for f in t["forms"] if f in FORM_TYPES] or list(FORM_TYPES)
     tickers = sorted({tk for t in tasks for tk in t["tickers"]})
     known = database.seen_accessions(tickers)
     errors: list[str] = []
@@ -354,7 +350,7 @@ async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]
                 continue
             watch.setdefault(cik, []).append((task, ticker))
 
-    # 首次监听的标的：补一次该公司 submissions 作为存量（10-Q/10-K 全量、8-K 仅业绩公告）
+    # 首次监听的标的：补一次该公司 submissions 作为存量（仅 8-K 业绩公告）
     for cik, pairs in watch.items():
         ticker = pairs[0][1]
         if database.ticker_has_seen(ticker):
@@ -372,7 +368,7 @@ async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]
                     continue
                 _record_hit(task, tk, f, known)
 
-    # 全市场 feed：按任务勾选类型各发一个请求，覆盖所有标的
+    # 全市场 feed：每类型一个请求，覆盖所有标的
     forms_wanted = sorted({fm for t in tasks for fm in t["forms"]})
     for form_type in forms_wanted:
         try:
@@ -390,21 +386,18 @@ async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]
                 continue
             if f["accession"] in known:
                 continue
-            if base == "8-K":
-                # 候选 8-K：先记为已检查（防每轮重复请求），再确认是否业绩公告
-                database.add_seen(f["accession"], interested[0][1], f["form"], is_hit=False)
-                try:
-                    earnings = await _check_8k_earnings(client, f["url"])
-                except Exception as e:  # noqa: BLE001
-                    errors.append(f"8-K 检查失败: {str(e)[:80]}")
-                    continue
-                if not earnings:
-                    log.info("SEC 8-K 非业绩公告，忽略 %s (%s)", interested[0][1], f["accession"])
-                    known.add(f["accession"])  # 同一轮内其他任务不再重复检查
-                    continue
-                database.mark_seen_hit(f["accession"])
-            else:
-                database.add_seen(f["accession"], interested[0][1], f["form"], is_hit=True)
+            # 候选 8-K：先记为已检查（防每轮重复请求），再确认是否业绩公告
+            database.add_seen(f["accession"], interested[0][1], f["form"], is_hit=False)
+            try:
+                earnings = await _check_8k_earnings(client, f["url"])
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"8-K 检查失败: {str(e)[:80]}")
+                continue
+            if not earnings:
+                log.info("SEC 8-K 非业绩公告，忽略 %s (%s)", interested[0][1], f["accession"])
+                known.add(f["accession"])  # 同一轮内其他任务不再重复检查
+                continue
+            database.mark_seen_hit(f["accession"])
             for task, tk in interested:
                 _record_hit(task, tk, f, known)
     return errors

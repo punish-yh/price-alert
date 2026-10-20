@@ -290,8 +290,8 @@ def delete_tv_forward(record_id: int) -> bool:
 def _sec_task_row(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["tickers"] = json.loads(d["tickers"])
-    # 旧任务无监听类型列时按 10-Q/10-K 兼容
-    d["forms"] = json.loads(d["forms"]) if d.get("forms") else ["10-Q", "10-K"]
+    # 旧任务无监听类型列（或只勾了已下线的 10-Q/10-K）时按 8-K 兼容
+    d["forms"] = json.loads(d["forms"]) if d.get("forms") else ["8-K"]
     return d
 
 

@@ -43,46 +43,30 @@ const TASK_STATUS_META: Record<SecTaskState, { label: string; cls: string }> = {
   failed: { label: '监听失败', cls: 'border-red-300 bg-red-50 text-red-600' },
 }
 
-const FORM_OPTIONS = [
-  { value: '10-Q', label: '10-Q 季报' },
-  { value: '10-K', label: '10-K 年报' },
-  { value: '8-K', label: '8-K 业绩公告' },
-]
-
 function SecTaskDialog({ initial, onSaved }: { initial?: SecTask; onSaved: () => void }) {
   const [open, setOpen] = useState(false)
   const [tickers, setTickers] = useState('')
-  const [forms, setForms] = useState<string[]>(['8-K'])
   const [watchDate, setWatchDate] = useState(todayStr)
   const [windowStart, setWindowStart] = useState('20:00')
   const [windowEnd, setWindowEnd] = useState('06:00')
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // 打开对话框时初始化：编辑用现有值；新建默认「监听日期=今天，窗口=未来 1~21 分钟，仅 8-K 业绩公告」
+  // 打开对话框时初始化：编辑用现有值；新建默认「监听日期=今天，窗口=未来 1~21 分钟」
   useEffect(() => {
     if (!open) return
     setTickers(initial ? initial.tickers.join(', ') : '')
-    setForms(initial ? [...initial.forms] : ['8-K'])
     setWatchDate(initial?.watch_date || todayStr())
     setWindowStart(initial?.window_start || nowHM(1))
     setWindowEnd(initial?.window_end || nowHM(21))
     setNote(initial?.note || '')
   }, [open, initial])
 
-  function toggleForm(value: string) {
-    setForms((prev) => (prev.includes(value) ? prev.filter((f) => f !== value) : [...prev, value]))
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const list = [...new Set(tickers.split(/[\s,，、;；]+/).map((t) => t.trim().toUpperCase()).filter(Boolean))]
     if (list.length === 0) {
       toast.error('请至少填写一个标的代码')
-      return
-    }
-    if (forms.length === 0) {
-      toast.error('请至少勾选一种监听类型')
       return
     }
     if (windowStart === windowEnd) {
@@ -93,7 +77,7 @@ function SecTaskDialog({ initial, onSaved }: { initial?: SecTask; onSaved: () =>
     try {
       const payload = {
         tickers: list,
-        forms,
+        forms: ['8-K'],
         watch_date: watchDate,
         window_start: windowStart,
         window_end: windowEnd,
@@ -140,8 +124,8 @@ function SecTaskDialog({ initial, onSaved }: { initial?: SecTask; onSaved: () =>
           <DialogTitle>{initial ? '编辑 SEC 财报监听' : '新建 SEC 财报监听'}</DialogTitle>
           <DialogDescription>
             只在指定的「日期 + 北京时间窗口」内监听 SEC EDGAR，窗口支持跨夜（如 20:00 –
-            次日 06:00）。标的发布 10-Q / 10-K（含修订版）即视为已获取，页面弹窗提醒；
-            窗口结束仍未捕获则标记为监听失败。
+            次日 06:00）。标的发布 8-K 业绩公告（含 Item 2.02 的业绩发布稿，追涨最敏感的信号；
+            其余 8-K 公告不通知）即视为已获取，页面弹窗提醒；窗口结束仍未捕获则标记为监听失败。
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -156,25 +140,6 @@ function SecTaskDialog({ initial, onSaved }: { initial?: SecTask; onSaved: () =>
               required
             />
             <p className="text-xs text-muted-foreground">用逗号或空格分隔，创建时会用 SEC 官方名录校验</p>
-          </div>
-          <div className="space-y-2">
-            <Label>监听类型</Label>
-            <div className="flex gap-4 rounded-lg border border-border/50 px-3 py-2">
-              {FORM_OPTIONS.map((f) => (
-                <label key={f.value} className="flex cursor-pointer items-center gap-1.5 text-sm">
-                  <input
-                    type="checkbox"
-                    className="h-3.5 w-3.5 accent-emerald-600"
-                    checked={forms.includes(f.value)}
-                    onChange={() => toggleForm(f.value)}
-                  />
-                  {f.label}
-                </label>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              8-K 业绩公告 = 含 Item 2.02 的 8-K（公司业绩发布稿，追涨最敏感的信号）；其余 8-K 公告不会通知
-            </p>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-2">
@@ -355,7 +320,7 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
               监听任务
             </CardTitle>
             <CardDescription>
-              窗口内每 {Math.round(status?.poll_interval ?? 15)} 秒抓一次 SEC 全市场最新申报 feed——每轮固定 2
+              窗口内每 {Math.round(status?.poll_interval ?? 15)} 秒抓一次 SEC 全市场最新 8-K 申报 feed——每轮 1
               个请求即覆盖全部标的（与标的数量无关）；SEC 10 req/s 为共享突发限速，轮询快慢由 SEC_POLL_INTERVAL 调节
             </CardDescription>
           </div>
@@ -437,7 +402,7 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
         <CardContent className="space-y-2 pt-0">
           {freshHits.length === 0 ? (
             <p className="rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted-foreground">
-              还没有捕获到新财报。任务创建后新发布的 10-Q / 10-K 会第一时间出现在这里并弹窗提醒。
+              还没有捕获到新财报。任务创建后新发布的 8-K 业绩公告会第一时间出现在这里并弹窗提醒。
             </p>
           ) : (
             freshHits.map(hitRow)

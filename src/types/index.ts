@@ -53,7 +53,7 @@ export interface SecTask {
   /** 实时推导的监听状态（未启动/监听中/已获取/监听失败） */
   task_status: SecTaskState
   hit_count: number
-  /** 勾选的监听类型：10-Q / 10-K / 8-K */
+  /** 监听类型：仅 8-K（Item 2.02 业绩公告） */
   forms: string[]
   created_at: string
   updated_at: string

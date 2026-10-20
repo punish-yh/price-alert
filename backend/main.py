@@ -259,7 +259,7 @@ WINDOW_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 class SecTaskCreate(BaseModel):
     tickers: list[str] = Field(min_length=1, max_length=20)
-    forms: list[str] = Field(min_length=1, max_length=3)
+    forms: list[str] = Field(min_length=1, max_length=1)
     watch_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     window_start: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     window_end: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
