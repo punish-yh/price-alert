@@ -114,6 +114,12 @@ export default function MonitorGroup({ symbol, monitors, price, onChanged, onDel
                 <span className="font-mono tabular-nums">{fmtPrice(m.target_price)}</span>
               </span>
 
+              {price !== undefined && (
+                <span className="font-mono text-xs tabular-nums text-zinc-600">
+                  现价 {fmtPrice(price)}
+                </span>
+              )}
+
               {distance !== null && (
                 <span
                   className={`font-mono text-xs tabular-nums ${

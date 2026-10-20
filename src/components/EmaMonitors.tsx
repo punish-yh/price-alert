@@ -323,6 +323,12 @@ export default function EmaMonitors({ monitors, prices, onDelete, onRestore, onC
                       <span className="text-xs text-muted-foreground">上穿 / 下穿 / 插针</span>
                     </span>
 
+                    {prices[m.symbol] !== undefined && (
+                      <span className="font-mono text-xs tabular-nums text-zinc-600">
+                        现价 {fmtPrice(prices[m.symbol])}
+                      </span>
+                    )}
+
                     {m.note && <span className="text-xs text-muted-foreground">｜{m.note}</span>}
 
                     {m.status === 'triggered' && (

@@ -411,7 +411,10 @@ async def _poll_ema(client: httpx.AsyncClient, active: list[dict]) -> None:
         if not spot and not fut:
             log.warning("交易对 %s %s 现货与合约均不可用，跳过 EMA 本轮", sym, interval)
             continue
-        closed = select_series(spot, fut)[:-1]  # 最后一根为未收盘 K 线，剔除
+        series = select_series(spot, fut)
+        if series:
+            last_prices[sym] = (series[-1]["close"], time.time())
+        closed = series[:-1]  # 最后一根为未收盘 K 线，剔除
         if len(closed) < 2:
             continue
         key = (sym, interval)
