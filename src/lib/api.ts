@@ -34,7 +34,11 @@ export const api = {
     }),
   logout: () => request<{ ok: boolean }>('/api/logout', { method: 'POST' }),
   me: () => request<{ username: string }>('/api/me'),
-  monitors: () => request<{ items: Monitor[] }>('/api/monitors'),
+  monitors: () => request<{ items: Monitor[]; unread_triggered: number }>('/api/monitors'),
+  markPriceTriggeredRead: () =>
+    request<{ ok: boolean; unread_triggered: number }>('/api/monitors/read-triggered', {
+      method: 'POST',
+    }),
   createMonitor: (body: {
     symbol: string
     direction: 'above' | 'below'

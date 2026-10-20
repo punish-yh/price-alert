@@ -23,6 +23,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   const [priceInfo, setPriceInfo] = useState<PricesResponse | null>(null)
   const [secHits, setSecHits] = useState<SecHit[]>([])
   const [secStatus, setSecStatus] = useState<SecStatus | null>(null)
+  const [unreadTriggered, setUnreadTriggered] = useState(0)
   const [tab, setTab] = useState<MonitorStatus>('active')
   const [view, setView] = useState<View>('monitors')
   const [loading, setLoading] = useState(true)
@@ -48,6 +49,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
     try {
       const [m, p, s] = await Promise.all([api.monitors(), api.prices(), api.secHits()])
       setMonitors(m.items)
+      setUnreadTriggered(m.unread_triggered)
       setPriceInfo(p)
       setSecHits(s.items)
       setSecStatus(s.status)
@@ -92,6 +94,13 @@ export default function Dashboard({ username, onLogout }: { username: string; on
       if (timer.current) clearInterval(timer.current)
     }
   }, [refresh])
+
+  // 查看「已触发」页即视为已读：记录水位并清掉角标
+  useEffect(() => {
+    if (view !== 'monitors' || tab !== 'triggered' || unreadTriggered === 0) return
+    setUnreadTriggered(0)
+    api.markPriceTriggeredRead().catch(() => {})
+  }, [view, tab, unreadTriggered])
 
   const priceMonitors = useMemo(() => monitors.filter((m) => m.type === 'price'), [monitors])
   const emaMonitors = useMemo(() => monitors.filter((m) => m.type === 'ema_cross'), [monitors])
@@ -159,9 +168,9 @@ export default function Dashboard({ username, onLogout }: { username: string; on
     >
       {icon}
       {label}
-      {v === 'monitors' && counts.active > 0 && (
-        <span className="ml-auto rounded-full bg-emerald-100 px-2 py-0.5 text-xs tabular-nums text-emerald-700">
-          {counts.active}
+      {v === 'monitors' && unreadTriggered > 0 && (
+        <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-xs tabular-nums text-amber-700">
+          {unreadTriggered}
         </span>
       )}
       {v === 'ema' && emaActiveCount > 0 && (

@@ -121,6 +121,10 @@ def init_db() -> None:
             """
         )
         _conn.execute("CREATE INDEX IF NOT EXISTS idx_sec_seen_ticker ON sec_seen(ticker)")
+        # 应用级键值状态（如：价格监控「已触发」的已读水位）
+        _conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
 
 
 def _now() -> str:
@@ -391,6 +395,38 @@ def last_hit_id(accession: str) -> int | None:
             "SELECT id FROM sec_hits WHERE accession=?", (accession,)
         ).fetchone()
     return row["id"] if row else None
+
+
+# ---------------- 应用级状态（app_state） ----------------
+
+def get_state(key: str) -> Optional[str]:
+    with _lock:
+        row = _conn.execute("SELECT value FROM app_state WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_state(key: str, value: str) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (?,?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+
+PRICE_TRIGGERED_READ_AT = "price_triggered_read_at"
+
+
+def unread_triggered_count() -> int:
+    """价格监控中未读的已触发数量；从未标记已读时统计全部已触发（首次查看「已触发」页后清零）"""
+    read_at = get_state(PRICE_TRIGGERED_READ_AT) or ""
+    with _lock:
+        row = _conn.execute(
+            """SELECT COUNT(*) AS n FROM monitors
+               WHERE type='price' AND status='triggered' AND triggered_at > ?""",
+            (read_at,),
+        ).fetchone()
+    return row["n"]
 
 
 def known_accessions(tickers: list[str]) -> set[str]:

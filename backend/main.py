@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -94,7 +94,26 @@ SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}$")
 
 @app.get("/api/monitors")
 async def list_monitors(user: str = auth.CurrentUser):
-    return {"items": database.list_monitors()}
+    return {
+        "items": database.list_monitors(),
+        "unread_triggered": database.unread_triggered_count(),
+    }
+
+
+@app.post("/api/monitors/read-triggered")
+async def mark_price_triggered_read(
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    """记录「已触发」已读水位：此后价格监控角标只统计新触发。
+
+    微秒精度使水位严格排在该秒任意触发记录之后（触发记录为秒精度），避免秒级时间比较漏算。
+    """
+    database.set_state(
+        database.PRICE_TRIGGERED_READ_AT,
+        datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+    )
+    return {"ok": True, "unread_triggered": database.unread_triggered_count()}
 
 
 @app.post("/api/monitors", status_code=status.HTTP_201_CREATED)
