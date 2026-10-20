@@ -157,7 +157,10 @@ function EmaDialog({ initial, onSaved }: { initial?: Monitor; onSaved: () => voi
               required
             />
             <datalist id="ema-symbol-list">
-              {symbols.slice(0, 500).map((s) => (
+              {(symbol.trim()
+                ? symbols.filter((s) => s.includes(symbol.trim().toUpperCase())).slice(0, 100)
+                : symbols.slice(0, 100)
+              ).map((s) => (
                 <option key={s} value={s} />
               ))}
             </datalist>

@@ -81,26 +81,44 @@ async def _fetch_klines(
 
 
 async def fetch_symbols(client: httpx.AsyncClient) -> list[str]:
-    """USDT 现货交易对列表，缓存 1 小时"""
+    """可选交易对列表：现货 USDT 交易对 + USDT 永续合约（含仅合约的标的），缓存 1 小时"""
     if _symbols_cache["data"] and time.time() - _symbols_cache["ts"] < 3600:
         return _symbols_cache["data"]
+    merged: set[str] = set()
+    # 现货 USDT 交易对
     for base in config.BINANCE_BASE_URLS:
         try:
             resp = await client.get(f"{base}/api/v3/exchangeInfo", timeout=15)
             resp.raise_for_status()
-            info = resp.json()
-            symbols = sorted(
+            merged |= {
                 s["symbol"]
-                for s in info.get("symbols", [])
+                for s in resp.json().get("symbols", [])
                 if s.get("status") == "TRADING"
                 and s.get("quoteAsset") == "USDT"
                 and s.get("isSpotTradingAllowed", True)
-            )
-            if symbols:
-                _symbols_cache.update(data=symbols, ts=time.time())
-                return symbols
+                and s["symbol"].isascii()
+            }
         except Exception as e:  # noqa: BLE001
-            log.warning("获取交易对列表失败(%s): %s", base, e)
+            log.warning("获取现货交易对列表失败(%s): %s", base, e)
+    # USDT 永续合约（覆盖没有现货、只有合约的标的，如部分小币种）
+    for base in config.FUTURES_BASE_URLS:
+        try:
+            resp = await client.get(f"{base}/fapi/v1/exchangeInfo", timeout=15)
+            resp.raise_for_status()
+            merged |= {
+                s["symbol"]
+                for s in resp.json().get("symbols", [])
+                if s.get("status") == "TRADING"
+                and s.get("contractType") == "PERPETUAL"
+                and s.get("quoteAsset") == "USDT"
+                and s["symbol"].isascii()
+            }
+        except Exception as e:  # noqa: BLE001
+            log.warning("获取合约交易对列表失败(%s): %s", base, e)
+    if merged:
+        symbols = sorted(merged)
+        _symbols_cache.update(data=symbols, ts=time.time())
+        return symbols
     return _symbols_cache["data"]
 
 

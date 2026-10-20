@@ -56,6 +56,10 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
   }, [open, initial])
 
   const currentPrice = prices[symbol.trim().toUpperCase()]
+  // 输入时按子串过滤（交易对数量已超 500，全量渲染 datalist 会截断 Z 开头等尾部标的）
+  const symbolOptions = symbol.trim()
+    ? symbols.filter((s) => s.includes(symbol.trim().toUpperCase())).slice(0, 100)
+    : symbols.slice(0, 100)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -130,7 +134,7 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
               required
             />
             <datalist id="symbol-list">
-              {symbols.slice(0, 500).map((s) => (
+              {symbolOptions.map((s) => (
                 <option key={s} value={s} />
               ))}
             </datalist>
