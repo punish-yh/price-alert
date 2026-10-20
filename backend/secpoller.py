@@ -32,6 +32,7 @@ sec_status: dict = {
     "in_window": False,
     "active_tasks": 0,
     "watching": [],
+    "poll_interval": config.SEC_POLL_INTERVAL,
 }
 
 _TICKER_MAP_TTL = 86400  # CIK 映射缓存 24 小时

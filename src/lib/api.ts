@@ -73,6 +73,10 @@ export const api = {
   }) => request<SecTask>('/api/sec/tasks', { method: 'POST', body: JSON.stringify(body) }),
   deleteSecTask: (id: number) =>
     request<{ ok: boolean }>(`/api/sec/tasks/${id}/delete`, { method: 'POST' }),
+  updateSecTask: (
+    id: number,
+    body: { tickers: string[]; watch_date: string; window_start: string; window_end: string; note: string }
+  ) => request<SecTask>(`/api/sec/tasks/${id}/update`, { method: 'POST', body: JSON.stringify(body) }),
   secHits: () => request<{ items: SecHit[]; status: SecStatus }>('/api/sec/hits'),
 }
 

@@ -228,12 +228,8 @@ async def sec_tasks(user: str = auth.CurrentUser):
     return {"items": items}
 
 
-@app.post("/api/sec/tasks", status_code=status.HTTP_201_CREATED)
-async def sec_task_create(
-    body: SecTaskCreate,
-    user: str = auth.CurrentUser,
-    _: None = auth.CsrfGuard,
-):
+async def _validate_sec_body(body: SecTaskCreate) -> list[str]:
+    """校验 SEC 任务字段并返回规范化后的代码列表"""
     try:
         datetime.strptime(body.watch_date, "%Y-%m-%d")
     except ValueError:
@@ -254,9 +250,36 @@ async def sec_task_create(
         raise
     except Exception as e:  # noqa: BLE001 - 映射拉取失败时放行
         logging.getLogger("main").warning("SEC ticker 映射校验跳过: %s", e)
+    return tickers
+
+
+@app.post("/api/sec/tasks", status_code=status.HTTP_201_CREATED)
+async def sec_task_create(
+    body: SecTaskCreate,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    tickers = await _validate_sec_body(body)
     return database.create_sec_task(
         tickers, body.watch_date, body.window_start, body.window_end, body.note.strip()
     )
+
+
+@app.post("/api/sec/tasks/{task_id}/update")
+async def sec_task_update(
+    task_id: int,
+    body: SecTaskCreate,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    task = database.get_sec_task(task_id)
+    if task is None or task["status"] != "active":
+        raise HTTPException(404, "监听任务不存在")
+    tickers = await _validate_sec_body(body)
+    database.update_sec_task(
+        task_id, tickers, body.watch_date, body.window_start, body.window_end, body.note.strip()
+    )
+    return database.get_sec_task(task_id)
 
 
 @app.post("/api/sec/tasks/{task_id}/delete")

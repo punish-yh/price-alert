@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CheckCircle2, ExternalLink, FileText, Loader2, Plus, Trash2 } from 'lucide-react'
+import { CheckCircle2, ExternalLink, FileText, Loader2, Pencil, Plus, Trash2 } from 'lucide-react'
 import { api, fmtTime } from '@/lib/api'
 import type { SecHit, SecStatus, SecTask, SecTaskState } from '@/types'
 import { Badge } from '@/components/ui/badge'
@@ -30,6 +30,12 @@ function todayStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+/** 当前时间 + minutesAhead 分钟后的 HH:MM（本地时区） */
+function nowHM(minutesAhead = 0): string {
+  const d = new Date(Date.now() + minutesAhead * 60_000)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 const TASK_STATUS_META: Record<SecTaskState, { label: string; cls: string }> = {
   pending: { label: '未启动', cls: 'border-zinc-300 bg-zinc-100 text-zinc-600' },
   listening: { label: '监听中', cls: 'border-sky-300 bg-sky-50 text-sky-700' },
@@ -37,7 +43,7 @@ const TASK_STATUS_META: Record<SecTaskState, { label: string; cls: string }> = {
   failed: { label: '监听失败', cls: 'border-red-300 bg-red-50 text-red-600' },
 }
 
-function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
+function SecTaskDialog({ initial, onSaved }: { initial?: SecTask; onSaved: () => void }) {
   const [open, setOpen] = useState(false)
   const [tickers, setTickers] = useState('')
   const [watchDate, setWatchDate] = useState(todayStr)
@@ -45,6 +51,16 @@ function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
   const [windowEnd, setWindowEnd] = useState('06:00')
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  // 打开对话框时初始化：编辑用现有值；新建默认「监听日期=今天，窗口=未来 1~21 分钟」
+  useEffect(() => {
+    if (!open) return
+    setTickers(initial ? initial.tickers.join(', ') : '')
+    setWatchDate(initial?.watch_date || todayStr())
+    setWindowStart(initial?.window_start || nowHM(1))
+    setWindowEnd(initial?.window_end || nowHM(21))
+    setNote(initial?.note || '')
+  }, [open, initial])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -59,20 +75,24 @@ function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
     }
     setSubmitting(true)
     try {
-      await api.createSecTask({
+      const payload = {
         tickers: list,
         watch_date: watchDate,
         window_start: windowStart,
         window_end: windowEnd,
         note: note.trim(),
-      })
-      toast.success('监听任务已创建')
+      }
+      if (initial) {
+        await api.updateSecTask(initial.id, payload)
+        toast.success('监听任务已更新')
+      } else {
+        await api.createSecTask(payload)
+        toast.success('监听任务已创建')
+      }
       setOpen(false)
-      setTickers('')
-      setNote('')
-      onCreated()
+      onSaved()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '创建失败')
+      toast.error(err instanceof Error ? err.message : '保存失败')
     } finally {
       setSubmitting(false)
     }
@@ -80,15 +100,27 @@ function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button className="bg-emerald-600 text-white hover:bg-emerald-500">
-          <Plus className="mr-1.5 h-4 w-4" />
-          新建监听
+      {initial ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2 text-xs text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+          onClick={() => setOpen(true)}
+        >
+          <Pencil className="mr-1 h-3.5 w-3.5" />
+          编辑
         </Button>
-      </DialogTrigger>
+      ) : (
+        <DialogTrigger asChild>
+          <Button className="bg-emerald-600 text-white hover:bg-emerald-500">
+            <Plus className="mr-1.5 h-4 w-4" />
+            新建监听
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>新建 SEC 财报监听</DialogTitle>
+          <DialogTitle>{initial ? '编辑 SEC 财报监听' : '新建 SEC 财报监听'}</DialogTitle>
           <DialogDescription>
             只在指定的「日期 + 北京时间窗口」内监听 SEC EDGAR，窗口支持跨夜（如 20:00 –
             次日 06:00）。标的发布 10-Q / 10-K（含修订版）即视为已获取，页面弹窗提醒；
@@ -153,7 +185,7 @@ function CreateSecTaskDialog({ onCreated }: { onCreated: () => void }) {
           <DialogFooter>
             <Button type="submit" disabled={submitting}>
               {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              创建监听
+              {initial ? '保存修改' : '创建监听'}
             </Button>
           </DialogFooter>
         </form>
@@ -172,7 +204,14 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
   const refreshTasks = useCallback(async (silent = false) => {
     try {
       const r = await api.secTasks()
-      setTasks(r.items)
+      // 按「监听日期 + 开始时间」升序：最先触发的排在最上面
+      setTasks(
+        [...r.items].sort(
+          (a, b) =>
+            `${a.watch_date} ${a.window_start}`.localeCompare(`${b.watch_date} ${b.window_start}`) ||
+            a.id - b.id
+        )
+      )
     } catch (err) {
       if (!silent) toast.error(err instanceof Error ? err.message : '加载失败')
     } finally {
@@ -261,7 +300,7 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
                 }`
               : '当前在所有任务的窗口外，暂停请求 SEC'}
         </p>
-        <CreateSecTaskDialog onCreated={() => refreshTasks(true)} />
+        <SecTaskDialog onSaved={() => refreshTasks(true)} />
       </div>
 
       {status?.in_window && status.ok === false && status.error && (
@@ -278,7 +317,8 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
               监听任务
             </CardTitle>
             <CardDescription>
-              窗口内每 15 秒抓一次 SEC 全市场最新申报 feed（每轮固定 2 个请求，所有标的共享）
+              窗口内每 {Math.round(status?.poll_interval ?? 15)} 秒抓一次 SEC 全市场最新申报 feed——每轮固定 2
+              个请求即覆盖全部标的（与标的数量无关）；SEC 10 req/s 为共享突发限速，轮询快慢由 SEC_POLL_INTERVAL 调节
             </CardDescription>
           </div>
           <Badge variant="outline" className="text-muted-foreground">
@@ -321,7 +361,8 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
                     <span className="text-xs text-emerald-600">已捕获 {t.hit_count} 份</span>
                   )}
                   {t.note && <span className="text-xs text-muted-foreground">｜{t.note}</span>}
-                  <span className="ml-auto">
+                  <span className="ml-auto flex items-center gap-1.5">
+                    <SecTaskDialog initial={t} onSaved={() => refreshTasks(true)} />
                     {busyId === t.id ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                     ) : (

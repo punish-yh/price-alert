@@ -296,6 +296,19 @@ def delete_sec_task(task_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def update_sec_task(
+    task_id: int, tickers: list[str], watch_date: str, window_start: str, window_end: str, note: str
+) -> bool:
+    with _lock, _conn:
+        cur = _conn.execute(
+            """UPDATE sec_tasks
+               SET tickers=?, watch_date=?, window_start=?, window_end=?, note=?, updated_at=?
+               WHERE id=? AND status='active'""",
+            (json.dumps(tickers), watch_date, window_start, window_end, note, _now(), task_id),
+        )
+        return cur.rowcount > 0
+
+
 def known_accessions(tickers: list[str]) -> set[str]:
     if not tickers:
         return set()

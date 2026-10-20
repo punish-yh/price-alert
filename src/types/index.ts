@@ -77,4 +77,5 @@ export interface SecStatus {
   in_window: boolean
   active_tasks: number
   watching: string[]
+  poll_interval: number
 }
