@@ -378,11 +378,14 @@ DIST_DIR = config.PROJECT_DIR / "dist"
 if DIST_DIR.exists():
     app.mount("/assets", StaticFiles(directory=DIST_DIR / "assets"), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def spa(full_path: str):
+    @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
+    async def spa(full_path: str, request: Request):
         if full_path.startswith("api/"):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         file = DIST_DIR / full_path
+        if request.method == "HEAD":
+            # 探测/校验类请求（如部署平台、监控探针）只发 HEAD，无需响应体
+            return Response(media_type="text/html")
         if full_path and file.is_file():
             return FileResponse(file)
         return FileResponse(DIST_DIR / "index.html")
