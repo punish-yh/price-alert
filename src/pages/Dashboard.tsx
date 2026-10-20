@@ -62,7 +62,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
 
   useEffect(() => {
     refresh()
-    timer.current = setInterval(() => refresh(true), 5000)
+    timer.current = setInterval(() => refresh(true), 3000)
     return () => {
       if (timer.current) clearInterval(timer.current)
     }

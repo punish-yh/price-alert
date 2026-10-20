@@ -93,8 +93,8 @@ TV_RATE_LIMIT = int(os.getenv("TV_RATE_LIMIT", "60"))
 TV_RATE_WINDOW = int(os.getenv("TV_RATE_WINDOW", "3600"))
 
 # ---------- SEC 财报监听 ----------
-# 监听窗口内的轮询间隔（秒）。轮询走的是 SEC 全市场申报 feed，每轮固定 2 个请求，与标的数量无关
-SEC_POLL_INTERVAL = float(os.getenv("SEC_POLL_INTERVAL", "15"))
+# 监听窗口内的轮询间隔（秒）。走全市场 feed，每轮 2~3 个请求，与标的数量无关
+SEC_POLL_INTERVAL = float(os.getenv("SEC_POLL_INTERVAL", "3"))
 # 所有任务都在窗口外时的休眠间隔（秒）
 SEC_IDLE_INTERVAL = float(os.getenv("SEC_IDLE_INTERVAL", "120"))
 # SEC 公平使用政策上限为 10 req/s，所有请求共享该限额

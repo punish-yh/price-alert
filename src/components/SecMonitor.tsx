@@ -221,7 +221,7 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
 
   useEffect(() => {
     refreshTasks()
-    timer.current = setInterval(() => refreshTasks(true), 5000)
+    timer.current = setInterval(() => refreshTasks(true), 3000)
     return () => {
       if (timer.current) clearInterval(timer.current)
     }

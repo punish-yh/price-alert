@@ -36,7 +36,7 @@
 
 - 每个任务：一个或多个美股代码 + **监听日期** + 北京时间窗口（支持跨夜，如 20:00 – 次日 06:00）；只在「日期 + 时间窗」内监听，窗口外完全休眠
 - 任务状态实时推导并以颜色区分：未启动（灰）→ 监听中（蓝）→ 已获取（绿，显示捕获份数）/ 监听失败（红，窗口结束仍未捕获）
-- 轮询走 SEC 全市场最新申报 feed：每轮仅 2 个请求（10-Q、10-K 各一，含 /A 修订版）即覆盖窗口内所有标的，标的再多也不增加请求量；所有 SEC 请求共享 `SEC_MAX_RPS` 限速（默认 10 req/s，即 SEC 公平使用政策上限）
+- 轮询走 SEC 全市场最新申报 feed：默认每 3 秒一轮、每轮仅 2 个请求（10-Q、10-K 各一，含 /A 修订版）即覆盖窗口内所有标的，标的再多也不增加请求量；所有 SEC 请求共享 `SEC_MAX_RPS` 突发限速（默认 10 req/s，即 SEC 公平使用政策上限）
 - 标的首次被监听时单独补一次该公司的 submissions 作为存量（不弹窗）；此后新发布的 10-Q / 10-K 立即弹窗并写入捕获记录
 - 代码用 SEC 官方名录（company_tickers.json，缓存 24 小时）校验；`SEC_USER_AGENT` 建议改成自己的邮箱（SEC 要求）
 
@@ -230,7 +230,7 @@ sudo systemctl restart price-alert
 | `FWALERT_WEBHOOK` | 饭碗告警 webhook 地址（必填，未配置时告警发送标记为失败） | 无 |
 | `TV_WEBHOOK_TOKEN` | TradingView 入口令牌 | 自动生成并持久化 |
 | `TV_RATE_LIMIT` / `TV_RATE_WINDOW` | TV 入口单 IP 限流：次数 / 窗口秒数 | 60 / 3600 |
-| `SEC_POLL_INTERVAL` / `SEC_IDLE_INTERVAL` | SEC 财报监听：窗口内轮询 / 窗口外休眠间隔（秒） | 15 / 120 |
+| `SEC_POLL_INTERVAL` / `SEC_IDLE_INTERVAL` | SEC 财报监听：窗口内轮询 / 窗口外休眠间隔（秒） | 3 / 120 |
 | `SEC_MAX_RPS` | SEC 请求共享的限速上限（SEC 公平使用政策为 10 req/s） | 10 |
 | `SEC_USER_AGENT` | SEC 要求携带可联系的 UA，建议改成自己的邮箱 | price-alert admin@example.com |
 
