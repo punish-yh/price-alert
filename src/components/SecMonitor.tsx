@@ -61,10 +61,18 @@ function SecTaskDialog({ initial, onSaved }: { initial?: SecTask; onSaved: () =>
   const [windowEnd, setWindowEnd] = useState('06:00')
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // 只在打开对话框时回填一次；任务列表每 3 秒刷新会换新 initial 对象，不能因此重置输入
+  const initializedFor = useRef<string | null>(null)
 
   // 打开对话框时初始化：编辑用现有值；新建默认「监听日期=今天，窗口=未来 1~21 分钟」
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      initializedFor.current = null
+      return
+    }
+    const key = initial ? `edit:${initial.id}` : 'new'
+    if (initializedFor.current === key) return
+    initializedFor.current = key
     setTickers(initial ? initial.tickers.join(', ') : '')
     setWatchDate(initial?.watch_date || todayStr())
     setWindowStart(initial?.window_start || nowHM(1))

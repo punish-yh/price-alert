@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   BellRing,
@@ -69,6 +69,8 @@ function EmaDialog({ initial, onSaved }: { initial?: Monitor; onSaved: () => voi
   const [note, setNote] = useState('')
   const [symbols, setSymbols] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
+  // 只在打开对话框时回填一次；父组件每 3 秒刷新会换新 initial 对象，不能因此重置输入
+  const initializedFor = useRef<string | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -79,7 +81,14 @@ function EmaDialog({ initial, onSaved }: { initial?: Monitor; onSaved: () => voi
   }, [open])
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      initializedFor.current = null
+      return
+    }
+    // 同一次打开只回填一次：刷新轮询会替换 initial 对象，但不应覆盖用户正在输入的内容
+    const key = initial ? `edit:${initial.id}` : 'new'
+    if (initializedFor.current === key) return
+    initializedFor.current = key
     setSymbol(initial?.symbol || '')
     setInterval_(initial?.interval || '1h')
     setEmaPeriod(initial ? String(initial.ema_period) : '55')

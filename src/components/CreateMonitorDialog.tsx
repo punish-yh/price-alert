@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Loader2, Pencil, Plus } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -38,6 +38,8 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
   const [note, setNote] = useState('')
   const [symbols, setSymbols] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
+  // 只在打开对话框时回填一次；父组件每 3 秒刷新会换新 initial 对象，不能因此重置输入
+  const initializedFor = useRef<string | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -48,7 +50,14 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
   }, [open])
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      initializedFor.current = null
+      return
+    }
+    // 同一次打开只回填一次：刷新轮询会替换 initial 对象，但不应覆盖用户正在输入的内容
+    const key = initial ? `edit:${initial.id}` : 'new'
+    if (initializedFor.current === key) return
+    initializedFor.current = key
     setSymbol(initial?.symbol || '')
     setDirection(initial?.direction || 'above')
     setPrice(initial ? String(initial.target_price) : '')
