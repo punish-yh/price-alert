@@ -81,7 +81,12 @@ async def _fetch_klines(
 
 
 async def fetch_symbols(client: httpx.AsyncClient) -> list[str]:
-    """可选交易对列表：现货 USDT 交易对 + USDT 永续合约（含仅合约的标的），缓存 1 小时"""
+    """可选交易对列表：现货 USDT 交易对 + USDT 永续合约（含仅合约的标的），缓存 1 小时
+
+    合约包含两类 contractType：
+    - PERPETUAL：加密货币永续合约
+    - TRADIFI_PERPETUAL：股票类永续合约（如 NVDAUSDT、NBISUSDT、AAPLUSDT）
+    """
     if _symbols_cache["data"] and time.time() - _symbols_cache["ts"] < 3600:
         return _symbols_cache["data"]
     merged: set[str] = set()
@@ -101,6 +106,7 @@ async def fetch_symbols(client: httpx.AsyncClient) -> list[str]:
         except Exception as e:  # noqa: BLE001
             log.warning("获取现货交易对列表失败(%s): %s", base, e)
     # USDT 永续合约（覆盖没有现货、只有合约的标的，如部分小币种）
+    # TRADIFI_PERPETUAL 是股票类合约（NVDAUSDT / NBISUSDT 等），与普通永续一样走 fapi K 线
     for base in config.FUTURES_BASE_URLS:
         try:
             resp = await client.get(f"{base}/fapi/v1/exchangeInfo", timeout=15)
@@ -109,7 +115,7 @@ async def fetch_symbols(client: httpx.AsyncClient) -> list[str]:
                 s["symbol"]
                 for s in resp.json().get("symbols", [])
                 if s.get("status") == "TRADING"
-                and s.get("contractType") == "PERPETUAL"
+                and s.get("contractType") in ("PERPETUAL", "TRADIFI_PERPETUAL")
                 and s.get("quoteAsset") == "USDT"
                 and s["symbol"].isascii()
             }

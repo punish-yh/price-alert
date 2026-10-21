@@ -53,12 +53,6 @@ def init_db() -> None:
             _conn.execute("ALTER TABLE monitors ADD COLUMN ema_period INTEGER")
         if "interval" not in cols:
             _conn.execute("ALTER TABLE monitors ADD COLUMN interval TEXT")
-        # 兼容旧库：sec_tasks 增加监听日期列与监听类型列
-        cols_sec = {r["name"] for r in _conn.execute("PRAGMA table_info(sec_tasks)")}
-        if "watch_date" not in cols_sec:
-            _conn.execute("ALTER TABLE sec_tasks ADD COLUMN watch_date TEXT")
-        if "forms" not in cols_sec:
-            _conn.execute("ALTER TABLE sec_tasks ADD COLUMN forms TEXT")
         _conn.execute(
             """
             CREATE TABLE IF NOT EXISTS tv_forwards (
@@ -90,6 +84,12 @@ def init_db() -> None:
             )
             """
         )
+        # 兼容旧库：sec_tasks 增加监听日期列与监听类型列（必须放在建表之后）
+        cols_sec = {r["name"] for r in _conn.execute("PRAGMA table_info(sec_tasks)")}
+        if "watch_date" not in cols_sec:
+            _conn.execute("ALTER TABLE sec_tasks ADD COLUMN watch_date TEXT")
+        if "forms" not in cols_sec:
+            _conn.execute("ALTER TABLE sec_tasks ADD COLUMN forms TEXT")
         _conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sec_hits (
@@ -107,6 +107,10 @@ def init_db() -> None:
             """
         )
         _conn.execute("CREATE INDEX IF NOT EXISTS idx_sec_hits_time ON sec_hits(detected_at)")
+        # 兼容旧库：财报记录增加已阅时间（NULL = 未读，用于侧边栏角标计数）
+        cols_hits = {r["name"] for r in _conn.execute("PRAGMA table_info(sec_hits)")}
+        if "read_at" not in cols_hits:
+            _conn.execute("ALTER TABLE sec_hits ADD COLUMN read_at TEXT")
         # 已检查过的申报去重表：8-K 非业绩公告只检查一次，避免每轮重复请求
         _conn.execute(
             """
@@ -488,6 +492,41 @@ def list_sec_hits(limit: int = 100) -> list[dict[str, Any]]:
             "SELECT * FROM sec_hits ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
     return [_row_to_dict(r) for r in rows]
+
+
+def get_sec_hit(hit_id: int) -> Optional[dict[str, Any]]:
+    with _lock:
+        row = _conn.execute("SELECT * FROM sec_hits WHERE id=?", (hit_id,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def mark_sec_hit_read(hit_id: int) -> bool:
+    """把单条财报记录标为已阅（重复标记不改时间）"""
+    with _lock, _conn:
+        cur = _conn.execute(
+            "UPDATE sec_hits SET read_at=? WHERE id=? AND read_at IS NULL",
+            (_now(), hit_id),
+        )
+        return cur.rowcount > 0
+
+
+def mark_all_sec_hits_read() -> int:
+    """把所有「新捕获」（非存量 baseline）记录标为已阅，返回本次标记条数"""
+    with _lock, _conn:
+        cur = _conn.execute(
+            "UPDATE sec_hits SET read_at=? WHERE baseline=0 AND read_at IS NULL",
+            (_now(),),
+        )
+        return cur.rowcount
+
+
+def unread_sec_hits_count() -> int:
+    """未读的新财报条数（不含任务创建前的存量记录）"""
+    with _lock:
+        row = _conn.execute(
+            "SELECT COUNT(*) AS n FROM sec_hits WHERE baseline=0 AND read_at IS NULL"
+        ).fetchone()
+    return row["n"]
 
 
 def ticker_has_hits(ticker: str) -> bool:

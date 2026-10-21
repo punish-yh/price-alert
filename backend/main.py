@@ -347,7 +347,33 @@ async def sec_task_delete(
 
 @app.get("/api/sec/hits")
 async def sec_hits(user: str = auth.CurrentUser):
-    return {"items": database.list_sec_hits(), "status": secpoller.sec_status}
+    return {
+        "items": database.list_sec_hits(),
+        "status": secpoller.sec_status,
+        "unread": database.unread_sec_hits_count(),
+    }
+
+
+@app.post("/api/sec/hits/{hit_id}/read")
+async def sec_hit_read(
+    hit_id: int,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    """单条已阅：角标未读数随之减一（重复点击幂等）"""
+    if database.get_sec_hit(hit_id) is None:
+        raise HTTPException(404, "财报记录不存在")
+    database.mark_sec_hit_read(hit_id)
+    return {"ok": True, "unread": database.unread_sec_hits_count()}
+
+
+@app.post("/api/sec/hits/read-all")
+async def sec_hits_read_all(
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    marked = database.mark_all_sec_hits_read()
+    return {"ok": True, "marked": marked, "unread": database.unread_sec_hits_count()}
 
 
 @app.get("/api/sec/events")

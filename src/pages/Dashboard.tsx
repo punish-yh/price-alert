@@ -23,9 +23,11 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   const [priceInfo, setPriceInfo] = useState<PricesResponse | null>(null)
   const [secHits, setSecHits] = useState<SecHit[]>([])
   const [secStatus, setSecStatus] = useState<SecStatus | null>(null)
+  const [unreadSec, setUnreadSec] = useState(0)
   const [unreadTriggered, setUnreadTriggered] = useState(0)
   const [tab, setTab] = useState<MonitorStatus>('active')
   const [view, setView] = useState<View>('monitors')
+  const [activeSymbol, setActiveSymbol] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastSecHitId = useRef<number | null>(null)
@@ -53,6 +55,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
       setPriceInfo(p)
       setSecHits(s.items)
       setSecStatus(s.status)
+      setUnreadSec(s.unread)
       // 轮询兜底：SSE 漏掉/断线期间的命中在这里补弹（notifySecHit 内部按 id 去重）
       const fresh = s.items.filter((h) => !h.baseline)
       const maxId = fresh.length ? Math.max(...fresh.map((h) => h.id)) : 0
@@ -127,6 +130,40 @@ export default function Dashboard({ username, onLogout }: { username: string; on
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
   }, [priceMonitors, tab])
 
+  // 交易对导航：只在交易对集合变化时重建观察器（价格每 3 秒刷新不会重置）
+  const groupKey = useMemo(() => groups.map(([symbol]) => symbol).join('|'), [groups])
+  const currentSymbol = groups.some(([symbol]) => symbol === activeSymbol)
+    ? activeSymbol
+    : groups[0]?.[0] ?? null
+
+  // 滚动联动：滚到哪一组，左侧导航就高亮哪一个
+  useEffect(() => {
+    if (view !== 'monitors' || !groupKey) return
+    const elements = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-monitor-group]')
+    )
+    if (elements.length === 0) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)
+        const top = visible[0]?.target.getAttribute('data-monitor-group')
+        if (top) setActiveSymbol(top)
+      },
+      { rootMargin: '-12% 0px -68% 0px', threshold: 0 }
+    )
+    elements.forEach((el) => observer.observe(el))
+    return () => observer.disconnect()
+  }, [view, groupKey])
+
+  function jumpToSymbol(symbol: string) {
+    setActiveSymbol(symbol)
+    document
+      .getElementById(`monitor-group-${symbol}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   async function handleDelete(id: number) {
     try {
       const r = await api.deleteMonitor(id)
@@ -178,9 +215,9 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           {emaActiveCount}
         </span>
       )}
-      {v === 'sec' && secHits.some((h) => !h.baseline) && (
+      {v === 'sec' && unreadSec > 0 && (
         <span className="ml-auto rounded-full bg-violet-100 px-2 py-0.5 text-xs tabular-nums text-violet-700">
-          {secHits.filter((h) => !h.baseline).length}
+          {unreadSec}
         </span>
       )}
     </button>
@@ -260,62 +297,118 @@ export default function Dashboard({ username, onLogout }: { username: string; on
             />
           </div>
         ) : (
-          <div className="mx-auto max-w-4xl">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-bold">价格监控</h2>
-              <CreateMonitorDialog
-                prices={priceInfo?.prices || {}}
-                onSaved={() => refresh(true)}
-              />
-            </div>
-
-            <Tabs value={tab} onValueChange={(v) => setTab(v as MonitorStatus)}>
-              <TabsList className="bg-white">
-                {TABS.map((t) => (
-                  <TabsTrigger key={t.value} value={t.value}>
-                    {t.label}
-                    <span className="ml-1.5 rounded-full bg-zinc-100 px-1.5 text-xs tabular-nums text-zinc-600">
-                      {counts[t.value]}
+          <div className="mx-auto flex max-w-6xl items-start gap-6">
+            {/* 交易对快捷导航：列出当前页签下已设监控的交易对，点击定位到对应分组 */}
+            {groups.length > 0 && (
+              <aside className="sticky top-6 hidden w-44 shrink-0 lg:block">
+                <div className="rounded-xl border border-zinc-200 bg-white p-2 shadow-sm">
+                  <div className="flex items-center justify-between px-2 py-1.5">
+                    <p className="text-xs font-semibold text-zinc-500">交易对导航</p>
+                    <span className="rounded-full bg-zinc-100 px-1.5 text-[11px] tabular-nums text-zinc-500">
+                      {groups.length}
                     </span>
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-
-            {pollerOk === false && (
-              <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
-                行情连接异常：{priceInfo?.poller_error || '未知错误'}（监控判定会暂停，恢复后自动继续）
-              </p>
+                  </div>
+                  <nav className="max-h-[calc(100vh-9rem)] space-y-0.5 overflow-y-auto pr-0.5">
+                    {groups.map(([symbol, items]) => {
+                      const active = symbol === currentSymbol
+                      return (
+                        <button
+                          key={symbol}
+                          type="button"
+                          onClick={() => jumpToSymbol(symbol)}
+                          title={`${symbol}（${items.length} 条监控）`}
+                          className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
+                            active
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900'
+                          }`}
+                        >
+                          <span
+                            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                              priceInfo?.prices?.[symbol] !== undefined
+                                ? 'bg-emerald-500'
+                                : 'bg-zinc-300'
+                            }`}
+                          />
+                          <span className="truncate font-mono font-semibold">{symbol}</span>
+                          <span
+                            className={`ml-auto shrink-0 rounded-full px-1.5 text-[11px] tabular-nums ${
+                              active ? 'bg-white text-emerald-700' : 'bg-zinc-100 text-zinc-500'
+                            }`}
+                          >
+                            {items.length}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </nav>
+                </div>
+              </aside>
             )}
 
-            <div className="mt-5 space-y-4">
-              {loading ? (
-                <div className="flex items-center justify-center py-20 text-zinc-500">
-                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                  加载中…
-                </div>
-              ) : groups.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-white py-20 text-zinc-500">
-                  <Activity className="h-8 w-8 opacity-40" />
-                  <p>
-                    {tab === 'active'
-                      ? '还没有活跃的监控，点击右上角「新建监控」开始'
-                      : `暂无${TABS.find((t) => t.value === tab)?.label}的监控`}
-                  </p>
-                </div>
-              ) : (
-                groups.map(([symbol, items]) => (
-                  <MonitorGroup
-                    key={symbol}
-                    symbol={symbol}
-                    monitors={items}
-                    price={priceInfo?.prices?.[symbol]}
-                    onChanged={() => refresh(true)}
-                    onDelete={handleDelete}
-                    onRestore={handleRestore}
-                  />
-                ))
+            <div className="min-w-0 flex-1">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-bold">价格监控</h2>
+                <CreateMonitorDialog
+                  prices={priceInfo?.prices || {}}
+                  onSaved={() => refresh(true)}
+                />
+              </div>
+
+              <Tabs value={tab} onValueChange={(v) => setTab(v as MonitorStatus)}>
+                <TabsList className="bg-white">
+                  {TABS.map((t) => (
+                    <TabsTrigger key={t.value} value={t.value}>
+                      {t.label}
+                      <span className="ml-1.5 rounded-full bg-zinc-100 px-1.5 text-xs tabular-nums text-zinc-600">
+                        {counts[t.value]}
+                      </span>
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+
+              {pollerOk === false && (
+                <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                  行情连接异常：{priceInfo?.poller_error || '未知错误'}（监控判定会暂停，恢复后自动继续）
+                </p>
               )}
+
+              <div className="mt-5 space-y-4">
+                {loading ? (
+                  <div className="flex items-center justify-center py-20 text-zinc-500">
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                    加载中…
+                  </div>
+                ) : groups.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-white py-20 text-zinc-500">
+                    <Activity className="h-8 w-8 opacity-40" />
+                    <p>
+                      {tab === 'active'
+                        ? '还没有活跃的监控，点击右上角「新建监控」开始'
+                        : `暂无${TABS.find((t) => t.value === tab)?.label}的监控`}
+                    </p>
+                  </div>
+                ) : (
+                  groups.map(([symbol, items]) => (
+                    <div
+                      key={symbol}
+                      id={`monitor-group-${symbol}`}
+                      data-monitor-group={symbol}
+                      className="scroll-mt-6"
+                    >
+                      <MonitorGroup
+                        symbol={symbol}
+                        monitors={items}
+                        price={priceInfo?.prices?.[symbol]}
+                        onChanged={() => refresh(true)}
+                        onDelete={handleDelete}
+                        onRestore={handleRestore}
+                      />
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         )}

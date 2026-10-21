@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CheckCircle2, ExternalLink, FileText, Loader2, Pencil, Plus, Trash2 } from 'lucide-react'
+import {
+  Check,
+  CheckCheck,
+  CheckCircle2,
+  ExternalLink,
+  FileText,
+  Loader2,
+  Pencil,
+  Plus,
+  Trash2,
+} from 'lucide-react'
 import { api, fmtTime } from '@/lib/api'
 import type { SecHit, SecStatus, SecTask, SecTaskState } from '@/types'
 import { Badge } from '@/components/ui/badge'
@@ -199,6 +209,8 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
   const [tasks, setTasks] = useState<SecTask[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [markingId, setMarkingId] = useState<number | null>(null)
+  const [markingAll, setMarkingAll] = useState(false)
   const [showBaseline, setShowBaseline] = useState(false)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -243,42 +255,104 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
     }
   }
 
+  async function handleMarkRead(id: number) {
+    setMarkingId(id)
+    try {
+      await api.markSecHitRead(id)
+      onChanged()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '标记已阅失败')
+    } finally {
+      setMarkingId(null)
+    }
+  }
+
+  async function handleMarkAllRead() {
+    setMarkingAll(true)
+    try {
+      const r = await api.markAllSecHitsRead()
+      if (r.marked > 0) toast.success(`已将 ${r.marked} 条财报标记为已阅`)
+      onChanged()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '标记已阅失败')
+    } finally {
+      setMarkingAll(false)
+    }
+  }
+
   const freshHits = hits.filter((h) => !h.baseline)
   const baselineHits = hits.filter((h) => h.baseline)
+  const unreadCount = freshHits.filter((h) => !h.read_at).length
 
-  const hitRow = (h: SecHit) => (
-    <div
-      key={h.id}
-      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border/50 px-3 py-2.5 text-sm"
-    >
-      <Badge
-        variant="outline"
-        className={
-          h.form.startsWith('8-K')
-            ? 'border-amber-300 bg-amber-50 text-amber-700'
-            : h.form.startsWith('10-K')
-              ? 'border-violet-200 bg-violet-50 text-violet-700'
-              : 'border-sky-200 bg-sky-50 text-sky-700'
-        }
+  const hitRow = (h: SecHit) => {
+    const unread = !h.read_at
+    return (
+      <div
+        key={h.id}
+        className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border px-3 py-2.5 text-sm ${
+          h.baseline
+            ? 'border-border/50'
+            : unread
+              ? 'border-amber-200/70 bg-amber-50/30'
+              : 'border-border/50 opacity-65'
+        }`}
       >
-        {h.form.startsWith('8-K') ? `${h.form.split('/')[0]} 业绩` : h.form}
-      </Badge>
-      <span className="font-bold">{h.ticker}</span>
-      <span className="text-xs text-muted-foreground">申报日期 {h.filing_date}</span>
-      <span className="text-xs text-muted-foreground">捕获于 {fmtTime(h.detected_at)}</span>
-      {h.url && (
-        <a
-          href={h.url}
-          target="_blank"
-          rel="noreferrer"
-          className="ml-auto inline-flex items-center gap-1 text-xs text-emerald-600 hover:underline"
+        <Badge
+          variant="outline"
+          className={
+            h.form.startsWith('8-K')
+              ? 'border-amber-300 bg-amber-50 text-amber-700'
+              : h.form.startsWith('10-K')
+                ? 'border-violet-200 bg-violet-50 text-violet-700'
+                : 'border-sky-200 bg-sky-50 text-sky-700'
+          }
         >
-          查看 SEC 原文
-          <ExternalLink className="h-3 w-3" />
-        </a>
-      )}
-    </div>
-  )
+          {h.form.startsWith('8-K') ? `${h.form.split('/')[0]} 业绩` : h.form}
+        </Badge>
+        <span className="font-bold">{h.ticker}</span>
+        <span className="text-xs text-muted-foreground">申报日期 {h.filing_date}</span>
+        <span className="text-xs text-muted-foreground">捕获于 {fmtTime(h.detected_at)}</span>
+        <span className="ml-auto flex items-center gap-2">
+          {h.url && (
+            <a
+              href={h.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:underline"
+            >
+              查看 SEC 原文
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+          {!h.baseline &&
+            (unread ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 border-amber-300 bg-white px-2 text-xs text-amber-700 hover:bg-amber-50"
+                disabled={markingId !== null || markingAll}
+                onClick={() => handleMarkRead(h.id)}
+              >
+                {markingId === h.id ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <CheckCheck className="mr-1 h-3.5 w-3.5" />
+                )}
+                已阅
+              </Button>
+            ) : (
+              <span
+                className="inline-flex items-center gap-1 text-xs text-zinc-400"
+                title={h.read_at ? `已阅于 ${fmtTime(h.read_at)}` : ''}
+              >
+                <Check className="h-3 w-3" />
+                已阅
+              </span>
+            ))}
+        </span>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -393,11 +467,36 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
       </Card>
 
       <Card className="border-border/60">
-        <CardHeader className="flex-row items-center justify-between space-y-0 py-4">
-          <CardTitle className="text-base">财报捕获记录</CardTitle>
-          <Badge variant="outline" className="text-muted-foreground">
-            {freshHits.length} 条
-          </Badge>
+        <CardHeader className="grid-cols-[1fr_auto] items-center space-y-0 py-4">
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-base">财报捕获记录</CardTitle>
+            {unreadCount > 0 && (
+              <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-700">
+                未读 {unreadCount}
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {unreadCount > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+                disabled={markingAll || markingId !== null}
+                onClick={handleMarkAllRead}
+              >
+                {markingAll ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <CheckCheck className="mr-1 h-3.5 w-3.5" />
+                )}
+                全部已阅
+              </Button>
+            )}
+            <Badge variant="outline" className="text-muted-foreground">
+              {freshHits.length} 条
+            </Badge>
+          </div>
         </CardHeader>
         <CardContent className="space-y-2 pt-0">
           {freshHits.length === 0 ? (

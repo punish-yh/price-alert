@@ -70,6 +70,15 @@ export interface SecHit {
   url: string
   baseline: number
   detected_at: string
+  /** 已阅时间；null / 缺省表示未读 */
+  read_at: string | null
+}
+
+export interface SecHitsResponse {
+  items: SecHit[]
+  status: SecStatus
+  /** 未读的新财报条数（不含存量记录），用于侧边栏角标 */
+  unread: number
 }
 
 export interface SecStatus {

@@ -1,4 +1,10 @@
-import type { Monitor, PricesResponse, SecHit, SecStatus, SecTask, TvForward } from '@/types'
+import type {
+  Monitor,
+  PricesResponse,
+  SecHitsResponse,
+  SecTask,
+  TvForward,
+} from '@/types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -106,7 +112,13 @@ export const api = {
       note: string
     }
   ) => request<SecTask>(`/api/sec/tasks/${id}/update`, { method: 'POST', body: JSON.stringify(body) }),
-  secHits: () => request<{ items: SecHit[]; status: SecStatus }>('/api/sec/hits'),
+  secHits: () => request<SecHitsResponse>('/api/sec/hits'),
+  markSecHitRead: (id: number) =>
+    request<{ ok: boolean; unread: number }>(`/api/sec/hits/${id}/read`, { method: 'POST' }),
+  markAllSecHitsRead: () =>
+    request<{ ok: boolean; marked: number; unread: number }>('/api/sec/hits/read-all', {
+      method: 'POST',
+    }),
 }
 
 /** 价格显示：小数值保留更多有效位 */
