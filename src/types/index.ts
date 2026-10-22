@@ -53,6 +53,8 @@ export interface SecTask {
   /** 实时推导的监听状态（未启动/监听中/已获取/监听失败） */
   task_status: SecTaskState
   hit_count: number
+  /** 已捕获到财报的标的（全部命中后任务才算「已获取」） */
+  hit_tickers: string[]
   /** 监听类型：仅 8-K（Item 2.02 业绩公告） */
   forms: string[]
   created_at: string

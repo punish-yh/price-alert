@@ -544,3 +544,15 @@ def sec_task_hit_counts() -> dict[int, int]:
             "SELECT task_id, COUNT(*) AS n FROM sec_hits WHERE baseline=0 GROUP BY task_id"
         ).fetchall()
     return {r["task_id"]: r["n"] for r in rows}
+
+
+def sec_task_hit_tickers() -> dict[int, set[str]]:
+    """每个任务已捕获到（非存量）财报的标的集合，用于判断多标的是否全部命中"""
+    with _lock:
+        rows = _conn.execute(
+            "SELECT task_id, ticker FROM sec_hits WHERE baseline=0 GROUP BY task_id, ticker"
+        ).fetchall()
+    out: dict[int, set[str]] = {}
+    for r in rows:
+        out.setdefault(r["task_id"], set()).add(r["ticker"])
+    return out

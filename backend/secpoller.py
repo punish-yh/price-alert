@@ -358,8 +358,10 @@ async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]
         try:
             filings = await _fetch_filings(client, cik)
         except Exception as e:  # noqa: BLE001 - 单 ticker 失败不影响其他
+            log.warning("SEC 存量回填失败 %s: %s", ticker, e)
             errors.append(f"{ticker}: {str(e)[:100]}")
             continue
+        log.info("SEC 存量回填 %s：%d 条 8-K 业绩公告", ticker, len(filings))
         for f in filings:
             database.add_seen(f["accession"], ticker, f["form"], is_hit=True, earnings=f["earnings"])
         for task, tk in pairs:
@@ -374,8 +376,10 @@ async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]
         try:
             entries = await _fetch_feed(client, form_type)
         except Exception as e:  # noqa: BLE001
+            log.warning("SEC %s feed 拉取失败: %s", form_type, e)
             errors.append(f"{form_type} feed: {str(e)[:100]}")
             continue
+        log.info("SEC %s feed 本轮 %d 条，监听 %d 只标的", form_type, len(entries), len(watch))
         for f in entries:
             pairs = watch.get(f["cik"])
             if not pairs:
@@ -386,25 +390,32 @@ async def _poll_round(client: httpx.AsyncClient, tasks: list[dict]) -> list[str]
                 continue
             if f["accession"] in known:
                 continue
-            # 候选 8-K：先记为已检查（防每轮重复请求），再确认是否业绩公告
-            database.add_seen(f["accession"], interested[0][1], f["form"], is_hit=False)
+            tk0 = interested[0][1]
+            log.info("SEC 候选 %s %s %s 提交日 %s", tk0, f["form"], f["accession"], f["filing_date"])
+            # 先抓取其索引页确认含 Item 2.02（业绩公告）；
+            # 确认请求失败不记 seen——下轮 feed 里再见到会重试，避免一次网络抖动永久漏掉
             try:
                 earnings = await _check_8k_earnings(client, f["url"])
             except Exception as e:  # noqa: BLE001
+                log.warning("SEC 8-K 业绩确认失败，下轮重试 %s %s: %s", tk0, f["accession"], e)
                 errors.append(f"8-K 检查失败: {str(e)[:80]}")
                 continue
             if not earnings:
-                log.info("SEC 8-K 非业绩公告，忽略 %s (%s)", interested[0][1], f["accession"])
+                database.add_seen(f["accession"], tk0, f["form"], is_hit=False)
+                log.info("SEC 8-K 非业绩公告，忽略 %s (%s)", tk0, f["accession"])
                 known.add(f["accession"])  # 同一轮内其他任务不再重复检查
                 continue
-            database.mark_seen_hit(f["accession"])
+            database.add_seen(f["accession"], tk0, f["form"], is_hit=True)
             for task, tk in interested:
                 _record_hit(task, tk, f, known)
+    if errors:
+        log.warning("SEC 本轮 %d 个错误: %s", len(errors), "; ".join(errors))
     return errors
 
 
 async def sec_poller_loop() -> None:
     """后台主循环：仅在有任务处于北京时间窗口内时轮询 EDGAR"""
+    was_in_window = False
     async with httpx.AsyncClient(headers=_headers(), follow_redirects=True) as client:
         while True:
             try:
@@ -415,9 +426,19 @@ async def sec_poller_loop() -> None:
                     in_window=bool(due),
                     watching=sorted({tk for t in due for tk in t["tickers"]}),
                 )
+                if due and not was_in_window:
+                    log.info(
+                        "SEC 进入监听窗口：任务 %s，标的 %s",
+                        [t["id"] for t in due],
+                        sorted({tk for t in due for tk in t["tickers"]}),
+                    )
                 if not due:
+                    if was_in_window:
+                        log.info("SEC 离开监听窗口：当前无窗口内任务，进入休眠")
+                    was_in_window = False
                     await asyncio.sleep(config.SEC_IDLE_INTERVAL)
                     continue
+                was_in_window = True
                 errors = await _poll_round(client, due)
                 sec_status.update(
                     ok=not errors,

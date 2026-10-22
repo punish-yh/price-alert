@@ -3,6 +3,7 @@ import asyncio
 import hmac
 import json
 import logging
+import logging.handlers
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -18,6 +19,12 @@ from pydantic import BaseModel, Field
 from . import auth, config, database, poller, secpoller, tvrelay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+# 日志同时落盘到 data/app.log（单文件 5MB，轮转 3 份），便于排查时直接取文件
+_log_file = logging.handlers.RotatingFileHandler(
+    config.DATA_DIR / "app.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+)
+_log_file.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+logging.getLogger().addHandler(_log_file)
 
 
 @asynccontextmanager
@@ -270,9 +277,13 @@ class SecTaskCreate(BaseModel):
 async def sec_tasks(user: str = auth.CurrentUser):
     items = database.list_sec_tasks()
     hits = database.sec_task_hit_counts()
+    hit_tickers = database.sec_task_hit_tickers()
     for t in items:
         t["hit_count"] = hits.get(t["id"], 0)
-        t["task_status"] = secpoller.task_status(t, t["hit_count"] > 0)
+        # 多标的任务须每只都捕获到财报才算「已获取」，仅命中一只不结束监听
+        acquired = sorted(hit_tickers.get(t["id"], set()))
+        t["hit_tickers"] = acquired
+        t["task_status"] = secpoller.task_status(t, set(t["tickers"]) <= set(acquired))
     return {"items": items}
 
 

@@ -423,6 +423,7 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
           ) : (
             tasks.map((t) => {
               const meta = TASK_STATUS_META[t.task_status] ?? TASK_STATUS_META.pending
+              const hitTickers = t.hit_tickers ?? []
               return (
                 <div
                   key={t.id}
@@ -433,11 +434,23 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
                     {meta.label}
                   </Badge>
                   <span className="flex flex-wrap gap-1">
-                    {t.tickers.map((tk) => (
-                      <Badge key={tk} variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
-                        {tk}
-                      </Badge>
-                    ))}
+                    {t.tickers.map((tk) => {
+                      const got = hitTickers.includes(tk)
+                      return (
+                        <Badge
+                          key={tk}
+                          variant="outline"
+                          className={
+                            got
+                              ? 'border-emerald-300 bg-emerald-100 text-emerald-700'
+                              : 'border-zinc-200 bg-zinc-50 text-zinc-500'
+                          }
+                        >
+                          {got && <CheckCircle2 className="mr-1 h-3 w-3" />}
+                          {tk}
+                        </Badge>
+                      )
+                    })}
                     {t.forms.map((fm) => (
                       <Badge key={fm} variant="outline" className="text-muted-foreground">
                         {fm === '8-K' ? '8-K 业绩' : fm}
@@ -448,7 +461,14 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
                     {t.watch_date} 北京时间 {t.window_start} – {t.window_end}
                   </span>
                   {t.task_status === 'acquired' && t.hit_count > 0 && (
-                    <span className="text-xs text-emerald-600">已捕获 {t.hit_count} 份</span>
+                    <span className="text-xs text-emerald-600">
+                      已捕获全部 {t.tickers.length} 只（共 {t.hit_count} 份）
+                    </span>
+                  )}
+                  {t.task_status !== 'acquired' && t.hit_count > 0 && (
+                    <span className="text-xs text-sky-600">
+                      已捕获 {hitTickers.length}/{t.tickers.length} 只
+                    </span>
                   )}
                   {t.note && <span className="text-xs text-muted-foreground">｜{t.note}</span>}
                   <span className="ml-auto flex items-center gap-1.5">
