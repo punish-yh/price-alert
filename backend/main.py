@@ -25,6 +25,8 @@ _log_file = logging.handlers.RotatingFileHandler(
 )
 _log_file.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
 logging.getLogger().addHandler(_log_file)
+# httpx 的 INFO 会把每个外发请求都写进日志（几秒一条），压过真正要排查的 SEC 记录，提升到 WARNING
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
