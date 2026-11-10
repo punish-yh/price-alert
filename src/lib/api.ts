@@ -1,4 +1,9 @@
 import type {
+  CorrAlert,
+  CorrHistoryPoint,
+  CorrMonitor,
+  CorrPollerStatus,
+  CorrPriceSource,
   Monitor,
   PricesResponse,
   SecHitsResponse,
@@ -117,6 +122,40 @@ export const api = {
     request<{ ok: boolean; unread: number }>(`/api/sec/hits/${id}/read`, { method: 'POST' }),
   markAllSecHitsRead: () =>
     request<{ ok: boolean; marked: number; unread: number }>('/api/sec/hits/read-all', {
+      method: 'POST',
+    }),
+  corrMonitors: () =>
+    request<{ items: CorrMonitor[]; status: CorrPollerStatus }>('/api/corr/monitors'),
+  createCorrMonitor: (body: {
+    symbol: string
+    price_source: CorrPriceSource
+    notify_webhook: boolean
+    thresholds: Record<string, { decorr: number | null; shift: number | null }>
+  }) => request<CorrMonitor>('/api/corr/monitors', { method: 'POST', body: JSON.stringify(body) }),
+  updateCorrMonitor: (
+    id: number,
+    body: {
+      symbol: string
+      price_source: CorrPriceSource
+      notify_webhook: boolean
+      thresholds: Record<string, { decorr: number | null; shift: number | null }>
+    }
+  ) =>
+    request<CorrMonitor>(`/api/corr/monitors/${id}/update`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteCorrMonitor: (id: number) =>
+    request<{ ok: boolean }>(`/api/corr/monitors/${id}/delete`, { method: 'POST' }),
+  corrHistory: (id: number, interval: string) =>
+    request<{ interval: string; window: number; items: CorrHistoryPoint[] }>(
+      `/api/corr/monitors/${id}/history?interval=${interval}`
+    ),
+  corrAlerts: () => request<{ items: CorrAlert[]; unread: number }>('/api/corr/alerts'),
+  markCorrAlertRead: (id: number) =>
+    request<{ ok: boolean; unread: number }>(`/api/corr/alerts/${id}/read`, { method: 'POST' }),
+  markAllCorrAlertsRead: () =>
+    request<{ ok: boolean; marked: number; unread: number }>('/api/corr/alerts/read-all', {
       method: 'POST',
     }),
 }

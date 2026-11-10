@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Bell, FileSearch, LineChart, Loader2, LogOut, Radio, TrendingUp } from 'lucide-react'
+import { Activity, Bell, FileSearch, GitCompareArrows, LineChart, Loader2, LogOut, Radio, TrendingUp } from 'lucide-react'
 import { api, fmtTime } from '@/lib/api'
-import type { Monitor, MonitorStatus, PricesResponse, SecHit, SecStatus } from '@/types'
+import type { CorrAlert, Monitor, MonitorStatus, PricesResponse, SecHit, SecStatus } from '@/types'
 import CreateMonitorDialog from '@/components/CreateMonitorDialog'
+import CorrMonitor from '@/components/CorrMonitor'
 import EmaMonitors from '@/components/EmaMonitors'
 import MonitorGroup from '@/components/MonitorGroup'
 import SecMonitor from '@/components/SecMonitor'
@@ -16,7 +17,7 @@ const TABS: { value: MonitorStatus; label: string }[] = [
   { value: 'deleted', label: '已删除' },
 ]
 
-type View = 'monitors' | 'ema' | 'tv' | 'sec'
+type View = 'monitors' | 'ema' | 'tv' | 'sec' | 'corr'
 
 export default function Dashboard({ username, onLogout }: { username: string; onLogout: () => void }) {
   const [monitors, setMonitors] = useState<Monitor[]>([])
@@ -24,6 +25,8 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   const [secHits, setSecHits] = useState<SecHit[]>([])
   const [secStatus, setSecStatus] = useState<SecStatus | null>(null)
   const [unreadSec, setUnreadSec] = useState(0)
+  const [corrAlerts, setCorrAlerts] = useState<CorrAlert[]>([])
+  const [unreadCorr, setUnreadCorr] = useState(0)
   const [unreadTriggered, setUnreadTriggered] = useState(0)
   const [tab, setTab] = useState<MonitorStatus>('active')
   const [view, setView] = useState<View>('monitors')
@@ -31,6 +34,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   const [loading, setLoading] = useState(true)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastSecHitId = useRef<number | null>(null)
+  const lastCorrAlertId = useRef<number | null>(null)
 
   /** SEC 新财报弹窗（SSE 与轮询共用，按命中 id 去重） */
   const notifySecHit = useCallback((h: SecHit) => {
@@ -46,16 +50,35 @@ export default function Dashboard({ username, onLogout }: { username: string; on
     })
   }, [])
 
+  /** 相关度告警弹窗（SSE 与轮询共用，按告警 id 去重） */
+  const notifyCorrAlert = useCallback((a: CorrAlert) => {
+    if (lastCorrAlertId.current !== null && a.id <= lastCorrAlertId.current) return
+    lastCorrAlertId.current = Math.max(lastCorrAlertId.current ?? 0, a.id)
+    if (a.kind === 'decorr') {
+      toast.warning(`${a.symbol} ${a.interval} 与 BTC 脱钩`, {
+        description: `当前 r=${a.r.toFixed(4)}，|r| ≤ 阈值 ${a.threshold}`,
+        duration: 15000,
+      })
+    } else {
+      toast.warning(`${a.symbol} ${a.interval} 与 BTC 相关性突变`, {
+        description: `r 由 ${a.prev_r?.toFixed(4) ?? '—'} 变为 ${a.r.toFixed(4)}，|Δr| ≥ 阈值 ${a.threshold}`,
+        duration: 15000,
+      })
+    }
+  }, [])
+
   // 后端 SSE 实时推送：财报命中即刻弹窗（无轮询延迟）；断线时由下方轮询兜底
   const refresh = useCallback(async (silent = false) => {
     try {
-      const [m, p, s] = await Promise.all([api.monitors(), api.prices(), api.secHits()])
+      const [m, p, s, c] = await Promise.all([api.monitors(), api.prices(), api.secHits(), api.corrAlerts()])
       setMonitors(m.items)
       setUnreadTriggered(m.unread_triggered)
       setPriceInfo(p)
       setSecHits(s.items)
       setSecStatus(s.status)
       setUnreadSec(s.unread)
+      setCorrAlerts(c.items)
+      setUnreadCorr(c.unread)
       // 轮询兜底：SSE 漏掉/断线期间的命中在这里补弹（notifySecHit 内部按 id 去重）
       const fresh = s.items.filter((h) => !h.baseline)
       const maxId = fresh.length ? Math.max(...fresh.map((h) => h.id)) : 0
@@ -66,12 +89,21 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           notifySecHit(h)
         }
       }
+      // 相关度告警轮询兜底（同样按 id 去重）
+      const maxCorrId = c.items.length ? Math.max(...c.items.map((a) => a.id)) : 0
+      if (lastCorrAlertId.current === null) {
+        lastCorrAlertId.current = maxCorrId
+      } else {
+        for (const a of c.items.filter((x) => x.id > lastCorrAlertId.current!).reverse()) {
+          notifyCorrAlert(a)
+        }
+      }
     } catch (err) {
       if (!silent) toast.error(err instanceof Error ? err.message : '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [notifySecHit])
+  }, [notifySecHit, notifyCorrAlert])
 
   // 后端 SSE 实时推送：财报命中即刻弹窗（无轮询延迟）；断线时由轮询兜底
   useEffect(() => {
@@ -83,12 +115,16 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           notifySecHit(data.hit as SecHit)
           refresh(true)
         }
+        if (data?.type === 'corr_alert' && data.alert) {
+          notifyCorrAlert(data.alert as CorrAlert)
+          refresh(true)
+        }
       } catch {
         /* 非 JSON 消息忽略 */
       }
     }
     return () => es.close()
-  }, [notifySecHit, refresh])
+  }, [notifySecHit, notifyCorrAlert, refresh])
 
   useEffect(() => {
     refresh()
@@ -220,6 +256,11 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           {unreadSec}
         </span>
       )}
+      {v === 'corr' && unreadCorr > 0 && (
+        <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-xs tabular-nums text-amber-700">
+          {unreadCorr}
+        </span>
+      )}
     </button>
   )
 
@@ -240,6 +281,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
         <nav className="flex-1 space-y-1 p-3">
           {navItem('monitors', <Bell className="h-4 w-4" />, '价格监控')}
           {navItem('ema', <LineChart className="h-4 w-4" />, 'EMA 均线监控')}
+          {navItem('corr', <GitCompareArrows className="h-4 w-4" />, '相关度计算')}
           {navItem('sec', <FileSearch className="h-4 w-4" />, 'SEC 财报监听')}
           {navItem('tv', <Radio className="h-4 w-4" />, 'TradingView 转发')}
         </nav>
@@ -284,6 +326,11 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           <div className="mx-auto max-w-4xl">
             <h2 className="mb-4 text-lg font-bold">SEC 财报监听</h2>
             <SecMonitor hits={secHits} status={secStatus} onChanged={() => refresh(true)} />
+          </div>
+        ) : view === 'corr' ? (
+          <div className="mx-auto max-w-5xl">
+            <h2 className="mb-4 text-lg font-bold">相关度计算</h2>
+            <CorrMonitor alerts={corrAlerts} unread={unreadCorr} onChanged={() => refresh(true)} />
           </div>
         ) : view === 'ema' ? (
           <div className="mx-auto max-w-4xl">

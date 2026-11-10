@@ -92,3 +92,65 @@ export interface SecStatus {
   watching: string[]
   poll_interval: number
 }
+
+// ---------------- 相关度计算（vs BTC） ----------------
+
+export type CorrPriceSource = 'close' | 'oc2' | 'typical'
+export type CorrInterval = '1h' | '4h' | '1d'
+
+export interface CorrThresholds {
+  /** 脱钩阈值：|r| ≤ 该值告警；null = 关闭 */
+  decorr: number | null
+  /** 突变阈值：|r − 上一根 r| ≥ 该值告警；null = 关闭 */
+  shift: number | null
+}
+
+export interface CorrState {
+  interval: string
+  last_open_time: number
+  last_r: number | null
+  decorr_active: number
+  last_shift_open: number
+}
+
+export interface CorrMonitor {
+  id: number
+  symbol: string
+  price_source: CorrPriceSource
+  notify_webhook: number
+  thresholds: Partial<Record<CorrInterval, CorrThresholds>>
+  status: 'active' | 'deleted'
+  created_at: string
+  updated_at: string
+  /** 每周期最新相关性点 */
+  latest: Partial<Record<CorrInterval, { open_time: number; r: number }>>
+  states: Partial<Record<CorrInterval, CorrState>>
+}
+
+export interface CorrPollerStatus {
+  ok: boolean | null
+  error: string
+  last_poll: string | null
+  active: number
+}
+
+export interface CorrAlert {
+  id: number
+  monitor_id: number
+  symbol: string
+  interval: CorrInterval
+  kind: 'decorr' | 'shift'
+  r: number
+  prev_r: number | null
+  threshold: number
+  open_time: number
+  webhook_ok: number | null
+  webhook_error: string
+  read_at: string | null
+  created_at: string
+}
+
+export interface CorrHistoryPoint {
+  open_time: number
+  r: number
+}

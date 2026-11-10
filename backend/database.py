@@ -129,6 +129,73 @@ def init_db() -> None:
         _conn.execute(
             "CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
+        # ---------------- 相关度计算（vs BTC） ----------------
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS corr_monitors (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol         TEXT    NOT NULL,
+                price_source   TEXT    NOT NULL DEFAULT 'close'
+                                       CHECK (price_source IN ('close','oc2','typical')),
+                notify_webhook INTEGER NOT NULL DEFAULT 1,
+                thresholds     TEXT    NOT NULL,
+                status         TEXT    NOT NULL DEFAULT 'active'
+                                       CHECK (status IN ('active','deleted')),
+                created_at     TEXT    NOT NULL,
+                updated_at     TEXT    NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS corr_history (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                monitor_id INTEGER NOT NULL,
+                interval   TEXT    NOT NULL,
+                open_time  INTEGER NOT NULL,
+                r          REAL    NOT NULL,
+                UNIQUE(monitor_id, interval, open_time)
+            )
+            """
+        )
+        _conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_corr_history_key ON corr_history(monitor_id, interval, open_time)"
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS corr_state (
+                monitor_id      INTEGER NOT NULL,
+                interval        TEXT    NOT NULL,
+                last_open_time  INTEGER NOT NULL DEFAULT 0,
+                last_r          REAL,
+                decorr_active   INTEGER NOT NULL DEFAULT 0,
+                last_shift_open INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (monitor_id, interval)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS corr_alerts (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                monitor_id    INTEGER NOT NULL,
+                symbol        TEXT    NOT NULL,
+                interval      TEXT    NOT NULL,
+                kind          TEXT    NOT NULL CHECK (kind IN ('decorr','shift')),
+                r             REAL    NOT NULL,
+                prev_r        REAL,
+                threshold     REAL    NOT NULL,
+                open_time     INTEGER NOT NULL,
+                webhook_ok    INTEGER,
+                webhook_error TEXT    NOT NULL DEFAULT '',
+                read_at       TEXT,
+                created_at    TEXT    NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_corr_alerts_time ON corr_alerts(created_at)"
+        )
 
 
 def _now() -> str:
@@ -556,3 +623,206 @@ def sec_task_hit_tickers() -> dict[int, set[str]]:
     for r in rows:
         out.setdefault(r["task_id"], set()).add(r["ticker"])
     return out
+
+
+# ---------------- 相关度计算（vs BTC） ----------------
+
+def _corr_row(row: sqlite3.Row) -> dict[str, Any]:
+    d = _row_to_dict(row)
+    d["thresholds"] = json.loads(d["thresholds"])
+    return d
+
+
+def create_corr_monitor(
+    symbol: str, price_source: str, notify_webhook: bool, thresholds: dict
+) -> dict[str, Any]:
+    with _lock, _conn:
+        cur = _conn.execute(
+            """INSERT INTO corr_monitors (symbol, price_source, notify_webhook, thresholds, created_at, updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            (symbol, price_source, 1 if notify_webhook else 0, json.dumps(thresholds), _now(), _now()),
+        )
+        mid = int(cur.lastrowid)  # type: ignore[arg-type]
+    return get_corr_monitor(mid)  # type: ignore[return-value]
+
+
+def get_corr_monitor(monitor_id: int) -> Optional[dict[str, Any]]:
+    with _lock:
+        row = _conn.execute("SELECT * FROM corr_monitors WHERE id=?", (monitor_id,)).fetchone()
+    return _corr_row(row) if row else None
+
+
+def list_corr_monitors() -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM corr_monitors WHERE status != 'deleted' ORDER BY symbol, created_at DESC"
+        ).fetchall()
+    return [_corr_row(r) for r in rows]
+
+
+def active_corr_monitors() -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute("SELECT * FROM corr_monitors WHERE status='active'").fetchall()
+    return [_corr_row(r) for r in rows]
+
+
+def update_corr_monitor(
+    monitor_id: int, price_source: str, notify_webhook: bool, thresholds: dict
+) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            """UPDATE corr_monitors SET price_source=?, notify_webhook=?, thresholds=?, updated_at=?
+               WHERE id=? AND status='active'""",
+            (price_source, 1 if notify_webhook else 0, json.dumps(thresholds), _now(), monitor_id),
+        )
+
+
+def delete_corr_monitor(monitor_id: int) -> bool:
+    with _lock, _conn:
+        cur = _conn.execute(
+            "UPDATE corr_monitors SET status='deleted', updated_at=? WHERE id=? AND status='active'",
+            (_now(), monitor_id),
+        )
+    return cur.rowcount > 0
+
+
+def corr_history_add(monitor_id: int, interval: str, points: list[tuple[int, float]], keep: int = 100) -> None:
+    """写入相关性历史点（open_time, r），并裁剪为每 (monitor, interval) 最近 keep 个"""
+    with _lock, _conn:
+        _conn.executemany(
+            "INSERT OR IGNORE INTO corr_history (monitor_id, interval, open_time, r) VALUES (?,?,?,?)",
+            [(monitor_id, interval, ot, r) for ot, r in points],
+        )
+        _conn.execute(
+            """DELETE FROM corr_history WHERE monitor_id=? AND interval=? AND open_time NOT IN (
+                   SELECT open_time FROM corr_history WHERE monitor_id=? AND interval=?
+                   ORDER BY open_time DESC LIMIT ?)""",
+            (monitor_id, interval, monitor_id, interval, keep),
+        )
+
+
+def corr_history_list(monitor_id: int, interval: str, limit: int = 100) -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute(
+            """SELECT open_time, r FROM corr_history WHERE monitor_id=? AND interval=?
+               ORDER BY open_time DESC LIMIT ?""",
+            (monitor_id, interval, limit),
+        ).fetchall()
+    return [_row_to_dict(r) for r in reversed(rows)]
+
+
+def corr_latest(monitor_id: int) -> dict[str, dict[str, Any]]:
+    """该监控每个周期最新一个历史点 {interval: {open_time, r}}"""
+    with _lock:
+        rows = _conn.execute(
+            """SELECT h.interval, h.open_time, h.r FROM corr_history h
+               JOIN (SELECT interval, MAX(open_time) AS mt FROM corr_history
+                     WHERE monitor_id=? GROUP BY interval) latest
+                 ON h.interval=latest.interval AND h.open_time=latest.mt
+               WHERE h.monitor_id=?""",
+            (monitor_id, monitor_id),
+        ).fetchall()
+    return {r["interval"]: _row_to_dict(r) for r in rows}
+
+
+def get_corr_state(monitor_id: int, interval: str) -> dict[str, Any]:
+    with _lock:
+        row = _conn.execute(
+            "SELECT * FROM corr_state WHERE monitor_id=? AND interval=?", (monitor_id, interval)
+        ).fetchone()
+    if row:
+        return _row_to_dict(row)
+    return {
+        "monitor_id": monitor_id,
+        "interval": interval,
+        "last_open_time": 0,
+        "last_r": None,
+        "decorr_active": 0,
+        "last_shift_open": 0,
+    }
+
+
+def save_corr_state(
+    monitor_id: int,
+    interval: str,
+    last_open_time: int,
+    last_r: float | None,
+    decorr_active: bool,
+    last_shift_open: int,
+) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            """INSERT INTO corr_state (monitor_id, interval, last_open_time, last_r, decorr_active, last_shift_open)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(monitor_id, interval) DO UPDATE SET
+                 last_open_time=excluded.last_open_time, last_r=excluded.last_r,
+                 decorr_active=excluded.decorr_active, last_shift_open=excluded.last_shift_open""",
+            (monitor_id, interval, last_open_time, last_r, 1 if decorr_active else 0, last_shift_open),
+        )
+
+
+def corr_states_for(monitor_id: int) -> dict[str, dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute("SELECT * FROM corr_state WHERE monitor_id=?", (monitor_id,)).fetchall()
+    return {r["interval"]: _row_to_dict(r) for r in rows}
+
+
+def add_corr_alert(
+    monitor_id: int,
+    symbol: str,
+    interval: str,
+    kind: str,
+    r: float,
+    prev_r: float | None,
+    threshold: float,
+    open_time: int,
+) -> int:
+    with _lock, _conn:
+        cur = _conn.execute(
+            """INSERT INTO corr_alerts
+               (monitor_id, symbol, interval, kind, r, prev_r, threshold, open_time, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (monitor_id, symbol, interval, kind, r, prev_r, threshold, open_time, _now()),
+        )
+        return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def get_corr_alert(alert_id: int) -> Optional[dict[str, Any]]:
+    with _lock:
+        row = _conn.execute("SELECT * FROM corr_alerts WHERE id=?", (alert_id,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def set_corr_alert_webhook(alert_id: int, ok: bool, err: str) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "UPDATE corr_alerts SET webhook_ok=?, webhook_error=? WHERE id=?",
+            (1 if ok else 0, err, alert_id),
+        )
+
+
+def list_corr_alerts(limit: int = 100) -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute("SELECT * FROM corr_alerts ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def unread_corr_alerts_count() -> int:
+    with _lock:
+        row = _conn.execute(
+            "SELECT COUNT(*) AS n FROM corr_alerts WHERE read_at IS NULL"
+        ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def mark_corr_alert_read(alert_id: int) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "UPDATE corr_alerts SET read_at=? WHERE id=? AND read_at IS NULL", (_now(), alert_id)
+        )
+
+
+def mark_all_corr_alerts_read() -> int:
+    with _lock, _conn:
+        cur = _conn.execute("UPDATE corr_alerts SET read_at=? WHERE read_at IS NULL", (_now(),))
+    return cur.rowcount

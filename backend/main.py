@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, config, database, poller, secpoller, tvrelay
+from . import auth, config, corrpoller, database, poller, secpoller, tvrelay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # 日志同时落盘到 data/app.log（单文件 5MB，轮转 3 份），便于排查时直接取文件
@@ -36,9 +36,11 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(auth._password_hash)
     task = asyncio.create_task(poller.poller_loop())
     sec_task = asyncio.create_task(secpoller.sec_poller_loop())
+    corr_task = asyncio.create_task(corrpoller.corr_poller_loop())
     yield
     task.cancel()
     sec_task.cancel()
+    corr_task.cancel()
 
 
 app = FastAPI(title="币安价格监控告警", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -410,6 +412,128 @@ async def sec_events(user: str = auth.CurrentUser):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------------- 相关度计算（vs BTC） ----------------
+
+class CorrMonitorCreate(BaseModel):
+    symbol: str = Field(min_length=2, max_length=20)
+    price_source: str = Field(default="close")
+    notify_webhook: bool = Field(default=True)
+    thresholds: dict = Field(default_factory=dict)
+
+
+def _corr_params(body: CorrMonitorCreate) -> tuple[str, str, bool, dict]:
+    symbol = body.symbol.upper().strip()
+    if not SYMBOL_RE.match(symbol):
+        raise HTTPException(400, "交易对格式不正确，例如 ETHUSDT")
+    if symbol == corrpoller.BENCHMARK:
+        raise HTTPException(400, "基准就是 BTC，无需监控 BTCUSDT 自身")
+    if body.price_source not in corrpoller.PRICE_SOURCES:
+        raise HTTPException(400, f"价格源仅支持：{', '.join(corrpoller.PRICE_SOURCES)}")
+    thresholds: dict = {}
+    for interval, th in (body.thresholds or {}).items():
+        if interval not in corrpoller.INTERVALS:
+            raise HTTPException(400, "周期仅支持 1h / 4h / 1d")
+        cleaned: dict = {}
+        for kind, lo, hi, label in (("decorr", 0.0, 1.0, "脱钩阈值"), ("shift", 0.0, 2.0, "突变阈值")):
+            v = (th or {}).get(kind)
+            if v is None or v == "":
+                cleaned[kind] = None  # 留空 = 关闭该类告警
+                continue
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"{label}必须是数字")
+            if not (lo < v <= hi):
+                raise HTTPException(400, f"{label}需在 ({lo}, {hi}] 区间内")
+            cleaned[kind] = v
+        thresholds[interval] = cleaned
+    return symbol, body.price_source, body.notify_webhook, thresholds
+
+
+@app.get("/api/corr/monitors")
+async def corr_monitors(user: str = auth.CurrentUser):
+    items = database.list_corr_monitors()
+    for m in items:
+        m["latest"] = database.corr_latest(m["id"])
+        m["states"] = database.corr_states_for(m["id"])
+    return {"items": items, "status": corrpoller.corr_status}
+
+
+@app.post("/api/corr/monitors", status_code=status.HTTP_201_CREATED)
+async def corr_monitor_create(
+    body: CorrMonitorCreate,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    symbol, price_source, notify_webhook, thresholds = _corr_params(body)
+    return database.create_corr_monitor(symbol, price_source, notify_webhook, thresholds)
+
+
+@app.post("/api/corr/monitors/{monitor_id}/update")
+async def corr_monitor_update(
+    monitor_id: int,
+    body: CorrMonitorCreate,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    m = database.get_corr_monitor(monitor_id)
+    if m is None or m["status"] != "active":
+        raise HTTPException(404, "相关度监控不存在")
+    symbol, price_source, notify_webhook, thresholds = _corr_params(body)
+    if symbol != m["symbol"]:
+        raise HTTPException(400, "不能修改交易对，请删除后新建")
+    database.update_corr_monitor(monitor_id, price_source, notify_webhook, thresholds)
+    return database.get_corr_monitor(monitor_id)
+
+
+@app.post("/api/corr/monitors/{monitor_id}/delete")
+async def corr_monitor_delete(
+    monitor_id: int,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    if not database.delete_corr_monitor(monitor_id):
+        raise HTTPException(404, "相关度监控不存在")
+    return {"ok": True}
+
+
+@app.get("/api/corr/monitors/{monitor_id}/history")
+async def corr_monitor_history(monitor_id: int, interval: str = "1h", user: str = auth.CurrentUser):
+    if interval not in corrpoller.INTERVALS:
+        raise HTTPException(400, "周期仅支持 1h / 4h / 1d")
+    return {
+        "interval": interval,
+        "window": corrpoller.INTERVALS[interval],
+        "items": database.corr_history_list(monitor_id, interval),
+    }
+
+
+@app.get("/api/corr/alerts")
+async def corr_alerts(user: str = auth.CurrentUser):
+    return {"items": database.list_corr_alerts(), "unread": database.unread_corr_alerts_count()}
+
+
+@app.post("/api/corr/alerts/{alert_id}/read")
+async def corr_alert_read(
+    alert_id: int,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    if database.get_corr_alert(alert_id) is None:
+        raise HTTPException(404, "告警记录不存在")
+    database.mark_corr_alert_read(alert_id)
+    return {"ok": True, "unread": database.unread_corr_alerts_count()}
+
+
+@app.post("/api/corr/alerts/read-all")
+async def corr_alerts_read_all(
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    marked = database.mark_all_corr_alerts_read()
+    return {"ok": True, "marked": marked, "unread": database.unread_corr_alerts_count()}
 
 
 # ---------------- 生产模式：托管前端构建产物 ----------------
