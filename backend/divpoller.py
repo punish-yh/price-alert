@@ -1,18 +1,20 @@
-"""BTC 背离监控：量价 / RSI / OBV / MACD(DIF) / MACD面积 顶底背离 + 数量组合告警
+"""BTC 背离监控：量价 / RSI / OBV / MACD(DIF) / MACD面积 顶底背离 + 自定义组合告警
 
 - 标的固定 BTCUSDT（合约优先），周期 1h / 4h / 1d，每 POLL_INTERVAL 秒（默认 5 分钟）检测一次
-- **使用正在走的 K 线**，不等收盘；最近 100 根 K 线与指标缓存供前端画图
-- 摆动点：左右各 3 根确认的 swing high/low；背离比较采用「前一个已确认摆动点 + 当前即时极值」，
-  后一个点未确认，因此背离可能随行情形成/消失，告警按方向状态机去重
+- **使用正在走的 K 线**，不等收盘；最近 365 根 K 线、指标与历史背离缓存供前端画图
+- 摆动点：左右各 3 根确认的 swing high/low；当前背离采用「前一个已确认摆动点 + 当前即时极值」，
+  后一个点未确认，因此背离可能随行情形成/消失，告警按 (规则, 周期, 方向) 状态机去重
+- 历史背离：对所有相邻已确认摆动点对、相邻同向 MACD 柱体区域对逐一判定，
+  与当前信号一起返回（图表上历史信号淡色、当前信号亮色，触发与未触发告警的都展示）
 - 五种背离口径：
   volume    量价：顶=价创新高但量缩，底=价创新低但量缩（后摆动点成交量均低于前一摆动点）
   rsi       RSI(14) Wilder：价格 HH/LL，RSI LH/HL
   obv       OBV：价格 HH/LL，OBV LH/HL
   macd      MACD(12,26,9) 的 DIF：价格 HH/LL，DIF LH/HL
   macd_area MACD 面积：柱体按零轴分波，最近两波同向区域，后波价格更极端但柱体面积绝对值更小
-- 告警：同方向「启用的背离种类数 ≥ min_count（2/3/4/5）」才触发，顶/底独立计数；
-  进入告警状态只告警一次，种类数跌回阈值以下后重新武装
-- 通知：网页（SSE + 告警记录）必选，饭碗 webhook 可选
+- 组合规则（可建多条）：任选背离种类 + 数量阈值 N + 生效周期 + 方向（顶/底/双向）；
+  某规则成员中同方向当前成立的种类数 ≥ N 即触发该规则，进入告警只报一次，解除后重新武装
+- 通知：网页（SSE + 告警记录）必选，饭碗 webhook 每条规则可选
 """
 import asyncio
 import json
@@ -38,42 +40,42 @@ KIND_CN = {
 }
 PIVOT_LEFT = 3
 PIVOT_RIGHT = 3
-CHART_CANDLES = 100
-KLINE_LIMIT = 200  # 保证 EMA26 / DEA9 / RSI14 收敛
+CHART_CANDLES = 365
+KLINE_LIMIT = 450  # 覆盖 365 根展示 + 指标预热（EMA26 / DEA9 / RSI14 收敛）
 
-DIV_CONFIG_KEY = "div_config"
-DIV_STATE_KEY = "div_alert_state"
+DIV_RULES_KEY = "div_rules"
+DIV_STATE_KEY = "div_rule_alert_state"
 
 div_status: dict = {"ok": None, "error": "", "last_poll": None}
-# interval -> {candles, indicators, divergences, updated_at}（内存缓存，供 API 直接返回）
+# interval -> {candles, indicators, divergences, history, updated_at}（内存缓存，供 API 直接返回）
 div_cache: dict = {}
 
 
-def default_interval_config() -> dict:
-    return {
-        "min_count": 2,
-        "notify_webhook": True,
-        "enabled": {k: True for k in KINDS},
-    }
+def default_rules() -> list[dict]:
+    return [
+        {
+            "id": 1,
+            "name": "默认组合",
+            "kinds": list(KINDS),
+            "min_count": 2,
+            "intervals": list(DIV_INTERVALS),
+            "direction": "both",
+            "notify_webhook": True,
+            "enabled": True,
+        }
+    ]
 
 
-def get_config() -> dict:
-    raw = database.get_state(DIV_CONFIG_KEY)
-    saved = {}
-    if raw:
-        try:
-            saved = json.loads(raw)
-        except ValueError:
-            saved = {}
-    cfg = {}
-    for interval in DIV_INTERVALS:
-        base = default_interval_config()
-        override = saved.get(interval) or {}
-        base["min_count"] = override.get("min_count", base["min_count"])
-        base["notify_webhook"] = override.get("notify_webhook", base["notify_webhook"])
-        base["enabled"].update(override.get("enabled") or {})
-        cfg[interval] = base
-    return cfg
+def get_rules() -> list[dict]:
+    raw = database.get_state(DIV_RULES_KEY)
+    if not raw:
+        return default_rules()
+    try:
+        rules = json.loads(raw)
+    except ValueError:
+        return default_rules()
+    # 空数组表示用户主动删除全部规则（暂停组合告警），不再回退默认规则
+    return rules if isinstance(rules, list) else default_rules()
 
 
 # ---------------- 指标计算 ----------------
@@ -168,10 +170,9 @@ def confirmed_pivots(candles: list[dict], left: int = PIVOT_LEFT, right: int = P
 def _price_divergence(
     candles: list[dict], values: list, pivots: list[int], direction: str, volume_contraction: bool = False
 ) -> dict | None:
-    """价格类背离通用判定：最近一个已确认摆动点 vs 其后即时极值。
+    """当前价格类背离：最近一个已确认摆动点 vs 其后即时极值。
     顶：价格更高且指标更低；底：价格更低且指标更高。
-    volume_contraction=True（量价背离专用）：底背离同样是「量缩」（v2 < v1），
-    即价格创新低但成交量低于前一低点（杀跌量能衰竭），与 RSI/OBV/DIF 的底背离方向相反。"""
+    volume_contraction=True（量价专用）：底背离同样是「量缩」（v2 < v1）。"""
     if not pivots:
         return None
     p1 = pivots[-1]
@@ -208,8 +209,8 @@ def _price_divergence(
     }
 
 
-def _area_divergence(candles: list[dict], hist: list[float | None], direction: str) -> dict | None:
-    """MACD 面积背离：柱体按零轴分波，最近两波同向区域比较"""
+def _hist_regions(hist: list[float | None]) -> list[dict]:
+    """MACD 柱体按零轴划分波段区域：{sign, start, end, area}（area 为柱体绝对值求和）"""
     regions: list[dict] = []
     cur: dict | None = None
     for i, h in enumerate(hist):
@@ -225,11 +226,11 @@ def _area_divergence(candles: list[dict], hist: list[float | None], direction: s
             cur = {"sign": sign, "start": i, "end": i, "area": abs(h)} if sign else None
     if cur is not None:
         regions.append(cur)
-    want = 1 if direction == "top" else -1
-    same = [r for r in regions if r["sign"] == want]
-    if len(same) < 2:
-        return None
-    a1, a2 = same[-2], same[-1]
+    return regions
+
+
+def _area_compare(candles: list[dict], a1: dict, a2: dict, direction: str) -> dict | None:
+    """两波同向区域比较：后波价格更极端且面积更小才背离"""
     seg1 = candles[a1["start"] : a1["end"] + 1]
     seg2 = candles[a2["start"] : a2["end"] + 1]
     if direction == "top":
@@ -256,8 +257,17 @@ def _area_divergence(candles: list[dict], hist: list[float | None], direction: s
     }
 
 
+def _area_divergence(candles: list[dict], hist: list[float | None], direction: str) -> dict | None:
+    """当前 MACD 面积背离：最近两波同向区域比较"""
+    want = 1 if direction == "top" else -1
+    same = [r for r in _hist_regions(hist) if r["sign"] == want]
+    if len(same) < 2:
+        return None
+    return _area_compare(candles, same[-2], same[-1], direction)
+
+
 def detect_divergences(candles: list[dict], ind: dict) -> dict:
-    """返回 {'top': {kind: detail}, 'bottom': {kind: detail}}，未启用过滤在告警层做"""
+    """当前信号：{'top': {kind: detail}, 'bottom': {kind: detail}}"""
     highs, lows = confirmed_pivots(candles)
     out = {"top": {}, "bottom": {}}
     for direction, pivots in (("top", highs), ("bottom", lows)):
@@ -272,6 +282,54 @@ def detect_divergences(candles: list[dict], ind: dict) -> dict:
         if area:
             out[direction]["macd_area"] = area
     return out
+
+
+def detect_history(candles: list[dict], ind: dict) -> list[dict]:
+    """历史信号：对所有相邻已确认摆动点对、相邻同向 MACD 区域对逐一判定。
+    返回 [{direction, kind, ...detail}]，供图表标注所有历史背离（无论是否触发过告警）。"""
+    highs, lows = confirmed_pivots(candles)
+    regions = _hist_regions(ind["hist"])
+    signals: list[dict] = []
+    for direction, pivots in (("top", highs), ("bottom", lows)):
+        for p1, p2 in zip(pivots, pivots[1:]):
+            if direction == "top":
+                price1, price2 = candles[p1]["high"], candles[p2]["high"]
+                if price2 <= price1:
+                    continue
+            else:
+                price1, price2 = candles[p1]["low"], candles[p2]["low"]
+                if price2 >= price1:
+                    continue
+            for kind in ("volume", "rsi", "obv", "macd"):
+                key = "dif" if kind == "macd" else kind
+                v1, v2 = ind[key][p1], ind[key][p2]
+                if v1 is None or v2 is None:
+                    continue
+                if kind == "volume":
+                    ok = v2 < v1  # 量价顶底均为量缩
+                else:
+                    ok = v2 < v1 if direction == "top" else v2 > v1
+                if not ok:
+                    continue
+                signals.append(
+                    {
+                        "direction": direction,
+                        "kind": kind,
+                        "p1_time": candles[p1]["open_time"],
+                        "p1_price": price1,
+                        "p2_time": candles[p2]["open_time"],
+                        "p2_price": price2,
+                        "v1": v1,
+                        "v2": v2,
+                    }
+                )
+        want = 1 if direction == "top" else -1
+        same = [r for r in regions if r["sign"] == want]
+        for a1, a2 in zip(same, same[1:]):
+            detail = _area_compare(candles, a1, a2, direction)
+            if detail:
+                signals.append({"direction": direction, "kind": "macd_area", **detail})
+    return signals
 
 
 # ---------------- 告警 ----------------
@@ -289,7 +347,8 @@ async def _send_div_webhook(client: httpx.AsyncClient, alert: dict) -> tuple[boo
     kinds_cn = "、".join(KIND_CN[k] for k in alert["kinds"])
     text = (
         f"【背离告警】{alert['symbol']} {alert['interval']} {direction_cn}组合"
-        f"（{len(alert['kinds'])} 种 ≥ 阈值 {alert['min_count']}）：{kinds_cn}（检测时间 {time_str}）"
+        f"「{alert['rule_name']}」（{len(alert['kinds'])} 种 ≥ 阈值 {alert['min_count']}）："
+        f"{kinds_cn}（检测时间 {time_str}）"
     )
     payload = {
         "message": text,
@@ -300,6 +359,7 @@ async def _send_div_webhook(client: httpx.AsyncClient, alert: dict) -> tuple[boo
         "interval": alert["interval"],
         "type": "divergence",
         "direction": alert["direction"],
+        "rule_name": alert["rule_name"],
         "kinds": ",".join(alert["kinds"]),
         "kinds_cn": kinds_cn,
         "count": str(len(alert["kinds"])),
@@ -319,36 +379,40 @@ async def _send_div_webhook(client: httpx.AsyncClient, alert: dict) -> tuple[boo
     return False, err
 
 
-async def _eval_alerts(client: httpx.AsyncClient, interval: str, cfg: dict, divs: dict) -> None:
+async def _eval_alerts(client: httpx.AsyncClient, interval: str, rules: list[dict], divs: dict) -> None:
     try:
         state = json.loads(database.get_state(DIV_STATE_KEY) or "{}")
     except ValueError:
         state = {}
-    st = state.get(interval) or {"top": False, "bottom": False}
     changed = False
-    for direction in ("top", "bottom"):
-        kinds = [k for k in KINDS if cfg["enabled"].get(k, True) and k in divs[direction]]
-        active = bool(st.get(direction))
-        if len(kinds) >= cfg["min_count"] and not active:
-            details = {k: divs[direction][k] for k in kinds}
-            alert_id = database.add_div_alert(
-                SYMBOL, interval, direction, kinds, details, cfg["min_count"]
-            )
-            log.info("背离告警 %s %s %s：%s", SYMBOL, interval, direction, kinds)
-            alert = database.get_div_alert(alert_id)
-            secpoller.publish({"type": "div_alert", "alert": alert})
-            if cfg["notify_webhook"]:
-                ok, err = await _send_div_webhook(client, alert)
-                database.set_div_alert_webhook(alert_id, ok, err)
-                if not ok:
-                    log.error("背离告警 webhook 发送失败: %s", err)
-            st[direction] = True
-            changed = True
-        elif len(kinds) < cfg["min_count"] and active:
-            st[direction] = False  # 组合解除，重新武装
-            changed = True
+    for rule in rules:
+        if not rule.get("enabled", True) or interval not in rule["intervals"]:
+            continue
+        for direction in ("top", "bottom"):
+            if rule["direction"] != "both" and rule["direction"] != direction:
+                continue
+            matched = [k for k in KINDS if k in rule["kinds"] and k in divs[direction]]
+            key = f"{rule['id']}|{interval}|{direction}"
+            active = bool(state.get(key))
+            if len(matched) >= rule["min_count"] and not active:
+                details = {k: divs[direction][k] for k in matched}
+                alert_id = database.add_div_alert(
+                    SYMBOL, interval, direction, matched, details, rule["min_count"], rule["name"]
+                )
+                log.info("背离告警 %s %s %s 规则「%s」：%s", SYMBOL, interval, direction, rule["name"], matched)
+                alert = database.get_div_alert(alert_id)
+                secpoller.publish({"type": "div_alert", "alert": alert})
+                if rule.get("notify_webhook", True):
+                    ok, err = await _send_div_webhook(client, alert)
+                    database.set_div_alert_webhook(alert_id, ok, err)
+                    if not ok:
+                        log.error("背离告警 webhook 发送失败: %s", err)
+                state[key] = True
+                changed = True
+            elif len(matched) < rule["min_count"] and active:
+                state[key] = False  # 组合解除，重新武装
+                changed = True
     if changed:
-        state[interval] = st
         database.set_state(DIV_STATE_KEY, json.dumps(state))
 
 
@@ -372,21 +436,23 @@ async def div_poller_loop() -> None:
     ) as client:
         while True:
             try:
-                cfg = get_config()
+                rules = get_rules()
                 for interval in DIV_INTERVALS:
                     candles = await _series(client, interval)
                     if len(candles) < 40:
                         continue
                     ind = compute_indicators(candles)
                     divs = detect_divergences(candles, ind)
+                    history = detect_history(candles, ind)
                     n = min(len(candles), CHART_CANDLES)
                     div_cache[interval] = {
                         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                         "candles": candles[-n:],
                         "indicators": {k: v[-n:] for k, v in ind.items()},
                         "divergences": divs,
+                        "history": history,
                     }
-                    await _eval_alerts(client, interval, cfg[interval], divs)
+                    await _eval_alerts(client, interval, rules, divs)
                 div_status.update(
                     ok=True,
                     error="",

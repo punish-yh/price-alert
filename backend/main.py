@@ -540,47 +540,94 @@ async def corr_alerts_read_all(
 
 # ---------------- BTC 背离监控 ----------------
 
-class DivConfigUpdate(BaseModel):
-    interval: str
+class DivRuleUpdate(BaseModel):
+    id: int = Field(default=0, ge=0)
+    name: str = Field(max_length=50)
+    kinds: list[str]
     min_count: int = Field(ge=2, le=5)
-    notify_webhook: bool = Field(default=True)
-    enabled: dict = Field(default_factory=dict)
+    intervals: list[str]
+    direction: str = "both"
+    notify_webhook: bool = True
+    enabled: bool = True
+
+
+def _reset_div_rule_state(rule_id: int) -> None:
+    """规则内容变化后清除其告警状态，避免沿用旧组合的触发状态。"""
+    try:
+        state = json.loads(database.get_state(divpoller.DIV_STATE_KEY) or "{}")
+    except ValueError:
+        state = {}
+    prefix = f"{rule_id}|"
+    changed = {k: v for k, v in state.items() if not k.startswith(prefix)}
+    if changed != state:
+        database.set_state(divpoller.DIV_STATE_KEY, json.dumps(changed))
 
 
 @app.get("/api/div/overview")
 async def div_overview(user: str = auth.CurrentUser):
     return {
         "intervals": divpoller.div_cache,
-        "config": divpoller.get_config(),
+        "rules": divpoller.get_rules(),
         "status": divpoller.div_status,
     }
 
 
-@app.post("/api/div/config")
-async def div_config_update(
-    body: DivConfigUpdate,
+@app.post("/api/div/rules")
+async def div_rule_save(
+    body: DivRuleUpdate,
     user: str = auth.CurrentUser,
     _: None = auth.CsrfGuard,
 ):
-    if body.interval not in divpoller.DIV_INTERVALS:
-        raise HTTPException(400, "周期仅支持 1h / 4h / 1d")
-    bad = [k for k in body.enabled if k not in divpoller.KINDS]
-    if bad:
-        raise HTTPException(400, f"未知背离类型：{', '.join(bad)}")
-    if sum(1 for v in body.enabled.values() if v) < body.min_count:
-        raise HTTPException(400, "启用的背离种类少于告警数量阈值，组合永远无法满足")
-    raw = database.get_state(divpoller.DIV_CONFIG_KEY)
-    try:
-        saved = json.loads(raw) if raw else {}
-    except ValueError:
-        saved = {}
-    saved[body.interval] = {
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "规则名称不能为空")
+    kinds = list(dict.fromkeys(body.kinds))
+    if not kinds or any(k not in divpoller.KINDS for k in kinds):
+        raise HTTPException(400, "请至少选择一种有效的背离类型")
+    intervals = list(dict.fromkeys(body.intervals))
+    if not intervals or any(i not in divpoller.DIV_INTERVALS for i in intervals):
+        raise HTTPException(400, "请至少选择一个有效周期（1h / 4h / 1d）")
+    if body.direction not in ("both", "top", "bottom"):
+        raise HTTPException(400, "方向仅支持双向、仅顶或仅底")
+    if body.min_count > len(kinds):
+        raise HTTPException(400, "告警数量阈值不能大于已选背离种类数")
+
+    rules = divpoller.get_rules()
+    rule = {
+        "id": body.id,
+        "name": name,
+        "kinds": kinds,
         "min_count": body.min_count,
+        "intervals": intervals,
+        "direction": body.direction,
         "notify_webhook": body.notify_webhook,
-        "enabled": {k: bool(body.enabled.get(k, True)) for k in divpoller.KINDS},
+        "enabled": body.enabled,
     }
-    database.set_state(divpoller.DIV_CONFIG_KEY, json.dumps(saved))
-    return {"ok": True, "config": divpoller.get_config()}
+    for i, old in enumerate(rules):
+        if old["id"] == body.id and body.id > 0:
+            rules[i] = rule
+            break
+    else:
+        rule["id"] = max((r["id"] for r in rules), default=0) + 1
+        rules.append(rule)
+    database.set_state(divpoller.DIV_RULES_KEY, json.dumps(rules, ensure_ascii=False))
+    _reset_div_rule_state(rule["id"])
+    return {"ok": True, "rules": divpoller.get_rules()}
+
+
+@app.post("/api/div/rules/{rule_id}/delete")
+async def div_rule_delete(
+    rule_id: int,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    rules = divpoller.get_rules()
+    remaining = [r for r in rules if r["id"] != rule_id]
+    if len(remaining) == len(rules):
+        raise HTTPException(404, "告警规则不存在")
+    database.set_state(divpoller.DIV_RULES_KEY, json.dumps(remaining, ensure_ascii=False))
+    _reset_div_rule_state(rule_id)
+    return {"ok": True, "rules": remaining}
 
 
 @app.get("/api/div/alerts")

@@ -88,12 +88,43 @@ function PriceTooltip({ active, payload }: { active?: boolean; payload?: { paylo
   )
 }
 
+type DivLine = {
+  key: string
+  kind: DivKind
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  color: string
+  historical: boolean
+}
+
+function signalLine(
+  direction: DivDirection,
+  kind: DivKind,
+  det: DivOverviewInterval['history'][number],
+  key: string,
+  historical: boolean
+): DivLine {
+  const common = {
+    key,
+    kind,
+    color: direction === 'top' ? DOWN : UP,
+    historical,
+  }
+  return kind === 'macd_area'
+    ? { ...common, x1: det.a1_start, y1: det.p1, x2: det.a2_end, y2: det.p2 }
+    : { ...common, x1: det.p1_time, y1: det.p1_price, x2: det.p2_time, y2: det.p2_price }
+}
+
 export default function DivCharts({
   overview,
   interval,
+  showHistory,
 }: {
   overview: DivOverviewInterval
   interval: DivInterval
+  showHistory: boolean
 }) {
   const rows = overview.candles.map((c, i) => ({
     ...c,
@@ -104,34 +135,19 @@ export default function DivCharts({
     hist: overview.indicators.hist[i],
   }))
 
-  // 当前检出的背离在价格图上画摆动点连线（顶=红，底=绿）
-  const divLines: { key: string; x1: number; y1: number; x2: number; y2: number; color: string; dash: string }[] = []
+  // 当前与历史信号都展示：当前深色，历史浅色虚线；是否触发过告警不影响绘制。
+  const divLines: DivLine[] = []
+  const visibleStart = rows[0]?.open_time ?? 0
+  if (showHistory) {
+    for (const [i, signal] of (overview.history ?? []).entries()) {
+      const line = signalLine(signal.direction, signal.kind, signal, `history-${i}`, true)
+      if (line.x1 >= visibleStart) divLines.push(line)
+    }
+  }
   for (const direction of ['top', 'bottom'] as DivDirection[]) {
-    const color = direction === 'top' ? DOWN : UP
     for (const [kind, det] of Object.entries(overview.divergences[direction])) {
       if (!det) continue
-      const dash = kind === 'macd_area' ? '2 3' : '6 3'
-      if (kind === 'macd_area') {
-        divLines.push({
-          key: `${direction}-${kind}`,
-          x1: det.a1_start,
-          y1: det.p1,
-          x2: det.a2_end,
-          y2: det.p2,
-          color,
-          dash,
-        })
-      } else {
-        divLines.push({
-          key: `${direction}-${kind}`,
-          x1: det.p1_time,
-          y1: det.p1_price,
-          x2: det.p2_time,
-          y2: det.p2_price,
-          color,
-          dash,
-        })
-      }
+      divLines.push(signalLine(direction, kind as DivKind, det as DivOverviewInterval['history'][number], `current-${direction}-${kind}`, false))
     }
   }
 
@@ -176,8 +192,16 @@ export default function DivCharts({
                   { x: l.x2, y: l.y2 },
                 ]}
                 stroke={l.color}
-                strokeWidth={1.6}
-                strokeDasharray={l.dash}
+                strokeOpacity={l.historical ? 0.35 : 0.95}
+                strokeWidth={l.historical ? 1 : 1.8}
+                strokeDasharray={l.historical ? '3 3' : l.kind === 'macd_area' ? '6 3' : undefined}
+                label={{
+                  value: DIV_KIND_CN[l.kind],
+                  position: 'middle',
+                  fontSize: l.historical ? 9 : 10,
+                  fill: l.color,
+                  fillOpacity: l.historical ? 0.55 : 1,
+                }}
               />
             ))}
           </ComposedChart>

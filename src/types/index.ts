@@ -194,6 +194,11 @@ export interface DivAreaDetail {
 
 export type DivDetail = DivPriceDetail & DivAreaDetail
 
+export type DivHistorySignal = DivDetail & {
+  direction: DivDirection
+  kind: DivKind
+}
+
 export interface DivOverviewInterval {
   updated_at: string
   candles: DivCandle[]
@@ -209,12 +214,19 @@ export interface DivOverviewInterval {
     top: Partial<Record<DivKind, DivDetail>>
     bottom: Partial<Record<DivKind, DivDetail>>
   }
+  /** 最近 365 根展示范围内及预热期识别出的历史信号，前端按可见范围过滤 */
+  history: DivHistorySignal[]
 }
 
-export interface DivIntervalConfig {
+export interface DivRule {
+  id: number
+  name: string
+  kinds: DivKind[]
   min_count: number
-  notify_webhook: boolean | number
-  enabled: Record<DivKind, boolean>
+  intervals: DivInterval[]
+  direction: 'both' | DivDirection
+  notify_webhook: boolean
+  enabled: boolean
 }
 
 export interface DivAlert {
@@ -225,6 +237,7 @@ export interface DivAlert {
   kinds: DivKind[]
   details: Record<string, DivDetail>
   min_count: number
+  rule_name: string
   webhook_ok: number | null
   webhook_error: string
   read_at: string | null

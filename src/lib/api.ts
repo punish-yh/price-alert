@@ -6,8 +6,7 @@ import type {
   CorrPriceSource,
   DivAlert,
   DivInterval,
-  DivIntervalConfig,
-  DivKind,
+  DivRule,
   DivOverviewInterval,
   Monitor,
   PricesResponse,
@@ -166,19 +165,16 @@ export const api = {
   divOverview: () =>
     request<{
       intervals: Partial<Record<DivInterval, DivOverviewInterval>>
-      config: Record<DivInterval, DivIntervalConfig>
+      rules: DivRule[]
       status: { ok: boolean | null; error: string; last_poll: string | null }
     }>('/api/div/overview'),
-  updateDivConfig: (body: {
-    interval: DivInterval
-    min_count: number
-    notify_webhook: boolean
-    enabled: Record<DivKind, boolean>
-  }) =>
-    request<{ ok: boolean; config: Record<DivInterval, DivIntervalConfig> }>('/api/div/config', {
+  saveDivRule: (body: DivRule) =>
+    request<{ ok: boolean; rules: DivRule[] }>('/api/div/rules', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  deleteDivRule: (id: number) =>
+    request<{ ok: boolean; rules: DivRule[] }>(`/api/div/rules/${id}/delete`, { method: 'POST' }),
   divAlerts: () => request<{ items: DivAlert[]; unread: number }>('/api/div/alerts'),
   markDivAlertRead: (id: number) =>
     request<{ ok: boolean; unread: number }>(`/api/div/alerts/${id}/read`, { method: 'POST' }),

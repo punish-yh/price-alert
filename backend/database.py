@@ -208,6 +208,7 @@ def init_db() -> None:
                 kinds         TEXT    NOT NULL,
                 details       TEXT    NOT NULL DEFAULT '{}',
                 min_count     INTEGER NOT NULL,
+                rule_name     TEXT    NOT NULL DEFAULT '',
                 webhook_ok    INTEGER,
                 webhook_error TEXT    NOT NULL DEFAULT '',
                 read_at       TEXT,
@@ -218,6 +219,10 @@ def init_db() -> None:
         _conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_div_alerts_time ON div_alerts(created_at)"
         )
+        # 兼容旧库：告警记录保存当时命中的自定义组合规则名
+        cols_div = {r["name"] for r in _conn.execute("PRAGMA table_info(div_alerts)")}
+        if "rule_name" not in cols_div:
+            _conn.execute("ALTER TABLE div_alerts ADD COLUMN rule_name TEXT NOT NULL DEFAULT ''")
 
 
 def _now() -> str:
@@ -853,13 +858,29 @@ def mark_all_corr_alerts_read() -> int:
 # ---------------- BTC 背离告警 ----------------
 
 def add_div_alert(
-    symbol: str, interval: str, direction: str, kinds: list[str], details: dict, min_count: int
+    symbol: str,
+    interval: str,
+    direction: str,
+    kinds: list[str],
+    details: dict,
+    min_count: int,
+    rule_name: str = "",
 ) -> int:
     with _lock, _conn:
         cur = _conn.execute(
-            """INSERT INTO div_alerts (symbol, interval, direction, kinds, details, min_count, created_at)
-               VALUES (?,?,?,?,?,?,?)""",
-            (symbol, interval, direction, json.dumps(kinds), json.dumps(details), min_count, _now()),
+            """INSERT INTO div_alerts
+               (symbol, interval, direction, kinds, details, min_count, rule_name, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                symbol,
+                interval,
+                direction,
+                json.dumps(kinds),
+                json.dumps(details),
+                min_count,
+                rule_name,
+                _now(),
+            ),
         )
         return int(cur.lastrowid)  # type: ignore[arg-type]
 
