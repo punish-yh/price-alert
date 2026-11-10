@@ -197,6 +197,28 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_corr_alerts_time ON corr_alerts(created_at)"
         )
 
+        # ---------------- BTC 背离告警 ----------------
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS div_alerts (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol        TEXT    NOT NULL,
+                interval      TEXT    NOT NULL,
+                direction     TEXT    NOT NULL CHECK (direction IN ('top','bottom')),
+                kinds         TEXT    NOT NULL,
+                details       TEXT    NOT NULL DEFAULT '{}',
+                min_count     INTEGER NOT NULL,
+                webhook_ok    INTEGER,
+                webhook_error TEXT    NOT NULL DEFAULT '',
+                read_at       TEXT,
+                created_at    TEXT    NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_div_alerts_time ON div_alerts(created_at)"
+        )
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -825,4 +847,64 @@ def mark_corr_alert_read(alert_id: int) -> None:
 def mark_all_corr_alerts_read() -> int:
     with _lock, _conn:
         cur = _conn.execute("UPDATE corr_alerts SET read_at=? WHERE read_at IS NULL", (_now(),))
+    return cur.rowcount
+
+
+# ---------------- BTC 背离告警 ----------------
+
+def add_div_alert(
+    symbol: str, interval: str, direction: str, kinds: list[str], details: dict, min_count: int
+) -> int:
+    with _lock, _conn:
+        cur = _conn.execute(
+            """INSERT INTO div_alerts (symbol, interval, direction, kinds, details, min_count, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (symbol, interval, direction, json.dumps(kinds), json.dumps(details), min_count, _now()),
+        )
+        return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def _div_row(row: sqlite3.Row) -> dict[str, Any]:
+    d = _row_to_dict(row)
+    d["kinds"] = json.loads(d["kinds"])
+    d["details"] = json.loads(d["details"] or "{}")
+    return d
+
+
+def get_div_alert(alert_id: int) -> Optional[dict[str, Any]]:
+    with _lock:
+        row = _conn.execute("SELECT * FROM div_alerts WHERE id=?", (alert_id,)).fetchone()
+    return _div_row(row) if row else None
+
+
+def set_div_alert_webhook(alert_id: int, ok: bool, err: str) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "UPDATE div_alerts SET webhook_ok=?, webhook_error=? WHERE id=?",
+            (1 if ok else 0, err, alert_id),
+        )
+
+
+def list_div_alerts(limit: int = 100) -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute("SELECT * FROM div_alerts ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [_div_row(r) for r in rows]
+
+
+def unread_div_alerts_count() -> int:
+    with _lock:
+        row = _conn.execute("SELECT COUNT(*) AS n FROM div_alerts WHERE read_at IS NULL").fetchone()
+    return int(row["n"]) if row else 0
+
+
+def mark_div_alert_read(alert_id: int) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "UPDATE div_alerts SET read_at=? WHERE id=? AND read_at IS NULL", (_now(), alert_id)
+        )
+
+
+def mark_all_div_alerts_read() -> int:
+    with _lock, _conn:
+        cur = _conn.execute("UPDATE div_alerts SET read_at=? WHERE read_at IS NULL", (_now(),))
     return cur.rowcount

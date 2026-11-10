@@ -135,7 +135,8 @@ def _fmt_price(p: float | None) -> str:
 
 
 def _parse_klines(raw: list) -> list[dict]:
-    """Binance klines -> [{'open_time','open','high','low','close','qvol'}, ...]
+    """Binance klines -> [{'open_time','open','high','low','close','volume','qvol'}, ...]
+    k[5] 为成交量（base asset volume），量价/OBV 背离用；
     k[7] 为成交额（quote asset volume），用作现货/合约加权的权重"""
     candles = []
     for k in raw:
@@ -146,6 +147,7 @@ def _parse_klines(raw: list) -> list[dict]:
                 "high": float(k[2]),
                 "low": float(k[3]),
                 "close": float(k[4]),
+                "volume": float(k[5]),
                 "qvol": float(k[7]),
             }
         )
@@ -178,6 +180,7 @@ def _merge_candle(spot: dict | None, fut: dict | None) -> dict:
     assert c is not None
     return {
         **{k: c[k] for k in ("open_time", "open", "high", "low", "close")},
+        "volume": c.get("volume", 0.0),
         "spot_close": spot["close"] if spot else None,
         "fut_close": fut["close"] if fut else None,
         "fused": False,

@@ -154,3 +154,79 @@ export interface CorrHistoryPoint {
   open_time: number
   r: number
 }
+
+// ---------------- BTC 背离监控 ----------------
+
+export type DivInterval = '1h' | '4h' | '1d'
+export type DivKind = 'volume' | 'rsi' | 'obv' | 'macd' | 'macd_area'
+export type DivDirection = 'top' | 'bottom'
+
+export interface DivCandle {
+  open_time: number
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+/** 价格类背离详情（volume/rsi/obv/macd） */
+export interface DivPriceDetail {
+  p1_time: number
+  p1_price: number
+  p2_time: number
+  p2_price: number
+  v1: number
+  v2: number
+}
+
+/** MACD 面积背离详情 */
+export interface DivAreaDetail {
+  a1_start: number
+  a1_end: number
+  a2_start: number
+  a2_end: number
+  p1: number
+  p2: number
+  area1: number
+  area2: number
+}
+
+export type DivDetail = DivPriceDetail & DivAreaDetail
+
+export interface DivOverviewInterval {
+  updated_at: string
+  candles: DivCandle[]
+  indicators: {
+    rsi: (number | null)[]
+    obv: number[]
+    dif: (number | null)[]
+    dea: (number | null)[]
+    hist: (number | null)[]
+    volume: number[]
+  }
+  divergences: {
+    top: Partial<Record<DivKind, DivDetail>>
+    bottom: Partial<Record<DivKind, DivDetail>>
+  }
+}
+
+export interface DivIntervalConfig {
+  min_count: number
+  notify_webhook: boolean | number
+  enabled: Record<DivKind, boolean>
+}
+
+export interface DivAlert {
+  id: number
+  symbol: string
+  interval: DivInterval
+  direction: DivDirection
+  kinds: DivKind[]
+  details: Record<string, DivDetail>
+  min_count: number
+  webhook_ok: number | null
+  webhook_error: string
+  read_at: string | null
+  created_at: string
+}

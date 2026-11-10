@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, config, corrpoller, database, poller, secpoller, tvrelay
+from . import auth, config, corrpoller, database, divpoller, poller, secpoller, tvrelay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # 日志同时落盘到 data/app.log（单文件 5MB，轮转 3 份），便于排查时直接取文件
@@ -37,10 +37,12 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(poller.poller_loop())
     sec_task = asyncio.create_task(secpoller.sec_poller_loop())
     corr_task = asyncio.create_task(corrpoller.corr_poller_loop())
+    div_task = asyncio.create_task(divpoller.div_poller_loop())
     yield
     task.cancel()
     sec_task.cancel()
     corr_task.cancel()
+    div_task.cancel()
 
 
 app = FastAPI(title="币安价格监控告警", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -534,6 +536,77 @@ async def corr_alerts_read_all(
 ):
     marked = database.mark_all_corr_alerts_read()
     return {"ok": True, "marked": marked, "unread": database.unread_corr_alerts_count()}
+
+
+# ---------------- BTC 背离监控 ----------------
+
+class DivConfigUpdate(BaseModel):
+    interval: str
+    min_count: int = Field(ge=2, le=5)
+    notify_webhook: bool = Field(default=True)
+    enabled: dict = Field(default_factory=dict)
+
+
+@app.get("/api/div/overview")
+async def div_overview(user: str = auth.CurrentUser):
+    return {
+        "intervals": divpoller.div_cache,
+        "config": divpoller.get_config(),
+        "status": divpoller.div_status,
+    }
+
+
+@app.post("/api/div/config")
+async def div_config_update(
+    body: DivConfigUpdate,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    if body.interval not in divpoller.DIV_INTERVALS:
+        raise HTTPException(400, "周期仅支持 1h / 4h / 1d")
+    bad = [k for k in body.enabled if k not in divpoller.KINDS]
+    if bad:
+        raise HTTPException(400, f"未知背离类型：{', '.join(bad)}")
+    if sum(1 for v in body.enabled.values() if v) < body.min_count:
+        raise HTTPException(400, "启用的背离种类少于告警数量阈值，组合永远无法满足")
+    raw = database.get_state(divpoller.DIV_CONFIG_KEY)
+    try:
+        saved = json.loads(raw) if raw else {}
+    except ValueError:
+        saved = {}
+    saved[body.interval] = {
+        "min_count": body.min_count,
+        "notify_webhook": body.notify_webhook,
+        "enabled": {k: bool(body.enabled.get(k, True)) for k in divpoller.KINDS},
+    }
+    database.set_state(divpoller.DIV_CONFIG_KEY, json.dumps(saved))
+    return {"ok": True, "config": divpoller.get_config()}
+
+
+@app.get("/api/div/alerts")
+async def div_alerts(user: str = auth.CurrentUser):
+    return {"items": database.list_div_alerts(), "unread": database.unread_div_alerts_count()}
+
+
+@app.post("/api/div/alerts/{alert_id}/read")
+async def div_alert_read(
+    alert_id: int,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    if database.get_div_alert(alert_id) is None:
+        raise HTTPException(404, "告警记录不存在")
+    database.mark_div_alert_read(alert_id)
+    return {"ok": True, "unread": database.unread_div_alerts_count()}
+
+
+@app.post("/api/div/alerts/read-all")
+async def div_alerts_read_all(
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    marked = database.mark_all_div_alerts_read()
+    return {"ok": True, "marked": marked, "unread": database.unread_div_alerts_count()}
 
 
 # ---------------- 生产模式：托管前端构建产物 ----------------

@@ -4,6 +4,11 @@ import type {
   CorrMonitor,
   CorrPollerStatus,
   CorrPriceSource,
+  DivAlert,
+  DivInterval,
+  DivIntervalConfig,
+  DivKind,
+  DivOverviewInterval,
   Monitor,
   PricesResponse,
   SecHitsResponse,
@@ -156,6 +161,29 @@ export const api = {
     request<{ ok: boolean; unread: number }>(`/api/corr/alerts/${id}/read`, { method: 'POST' }),
   markAllCorrAlertsRead: () =>
     request<{ ok: boolean; marked: number; unread: number }>('/api/corr/alerts/read-all', {
+      method: 'POST',
+    }),
+  divOverview: () =>
+    request<{
+      intervals: Partial<Record<DivInterval, DivOverviewInterval>>
+      config: Record<DivInterval, DivIntervalConfig>
+      status: { ok: boolean | null; error: string; last_poll: string | null }
+    }>('/api/div/overview'),
+  updateDivConfig: (body: {
+    interval: DivInterval
+    min_count: number
+    notify_webhook: boolean
+    enabled: Record<DivKind, boolean>
+  }) =>
+    request<{ ok: boolean; config: Record<DivInterval, DivIntervalConfig> }>('/api/div/config', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  divAlerts: () => request<{ items: DivAlert[]; unread: number }>('/api/div/alerts'),
+  markDivAlertRead: (id: number) =>
+    request<{ ok: boolean; unread: number }>(`/api/div/alerts/${id}/read`, { method: 'POST' }),
+  markAllDivAlertsRead: () =>
+    request<{ ok: boolean; marked: number; unread: number }>('/api/div/alerts/read-all', {
       method: 'POST',
     }),
 }
