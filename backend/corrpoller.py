@@ -244,6 +244,24 @@ async def _process_interval(
         await asyncio.sleep(0.2)  # 轻微间隔，避免打满权重
 
 
+async def backfill_monitor_now(m: dict) -> dict[str, int]:
+    """新建监控后立即回填三个周期，返回各周期实际历史点数。
+
+    创建接口调用；失败仍由后台轮询按 last_open_time=0 自动重试。
+    """
+    counts: dict[str, int] = {}
+    async with httpx.AsyncClient(
+        headers={"User-Agent": "price-alert/1.0"}, follow_redirects=True
+    ) as client:
+        for interval in INTERVALS:
+            try:
+                await _process_interval(client, [m], interval)
+            except Exception as e:  # noqa: BLE001 - 单周期失败不阻塞其他周期和创建操作
+                log.error("%s %s 创建后即时回填失败: %s", m["symbol"], interval, e)
+            counts[interval] = len(database.corr_history_list(m["id"], interval))
+    return counts
+
+
 async def corr_poller_loop() -> None:
     """后台主循环：每 POLL_INTERVAL 秒检查一轮，各周期只在新收盘 K 线时计算"""
     async with httpx.AsyncClient(

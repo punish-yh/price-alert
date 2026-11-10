@@ -163,8 +163,13 @@ function CorrDialog({ initial, onSaved }: { initial?: CorrMonitorType; onSaved: 
         await api.updateCorrMonitor(initial.id, payload)
         toast.success('相关度监控已更新')
       } else {
-        await api.createCorrMonitor(payload)
-        toast.success('相关度监控已创建，首次将回填最近 100 个历史相关性点')
+        const created = await api.createCorrMonitor(payload)
+        const ready = Object.keys(created.latest ?? {}).length
+        toast.success(
+          ready === INTERVALS.length
+            ? '相关度监控已创建，三个周期的历史曲线已回填'
+            : '相关度监控已创建，部分周期暂缺数据，后台会自动重试'
+        )
       }
       setOpen(false)
       onSaved()
@@ -342,7 +347,7 @@ function CorrHistoryChart({
   if (points.length === 0) {
     return (
       <div className="flex h-44 items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted-foreground">
-        暂无历史点，等待回填或下一根 K 线收盘
+        暂无可计算的历史点，后台会自动重试回填
       </div>
     )
   }

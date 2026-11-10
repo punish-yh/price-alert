@@ -470,7 +470,15 @@ async def corr_monitor_create(
     _: None = auth.CsrfGuard,
 ):
     symbol, price_source, notify_webhook, thresholds = _corr_params(body)
-    return database.create_corr_monitor(symbol, price_source, notify_webhook, thresholds)
+    m = database.create_corr_monitor(symbol, price_source, notify_webhook, thresholds)
+    # 新建时立即回填，不再让用户等待下一轮后台轮询；失败仍可随后台水位自动重试
+    try:
+        await asyncio.wait_for(corrpoller.backfill_monitor_now(m), timeout=45)
+    except Exception as e:  # noqa: BLE001 - 监控已创建，回填失败不能变成创建失败
+        logging.getLogger("corrpoller").warning("%s 创建后即时回填未完成: %s", symbol, e)
+    m["latest"] = database.corr_latest(m["id"])
+    m["states"] = database.corr_states_for(m["id"])
+    return m
 
 
 @app.post("/api/corr/monitors/{monitor_id}/update")
