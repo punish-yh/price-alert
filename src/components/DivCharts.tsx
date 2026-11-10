@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import {
   Bar,
   CartesianGrid,
@@ -126,7 +127,33 @@ export default function DivCharts({
   interval: DivInterval
   showHistory: boolean
 }) {
-  const rows = overview.candles.map((c, i) => ({
+  const total = overview.candles.length
+  const [visibleCount, setVisibleCount] = useState(total)
+  const zoomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setVisibleCount(total)
+  }, [interval, total])
+
+  useEffect(() => {
+    const node = zoomRef.current
+    if (!node) return
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY === 0) return
+      // 原生非 passive 监听，确保图表缩放时页面不会跟着滚动。
+      event.preventDefault()
+      const factor = event.deltaY < 0 ? 0.8 : 1.25
+      setVisibleCount((current) => {
+        const min = Math.min(20, total)
+        const next = Math.round(current * factor)
+        return Math.max(min, Math.min(total, next))
+      })
+    }
+    node.addEventListener('wheel', handleWheel, { passive: false })
+    return () => node.removeEventListener('wheel', handleWheel)
+  }, [total])
+
+  const allRows = overview.candles.map((c, i) => ({
     ...c,
     rsi: overview.indicators.rsi[i],
     obv: overview.indicators.obv[i],
@@ -134,6 +161,7 @@ export default function DivCharts({
     dea: overview.indicators.dea[i],
     hist: overview.indicators.hist[i],
   }))
+  const rows = allRows.slice(-Math.min(visibleCount, total))
 
   // 当前与历史信号都展示：当前深色，历史浅色虚线；是否触发过告警不影响绘制。
   const divLines: DivLine[] = []
@@ -166,7 +194,15 @@ export default function DivCharts({
   )
 
   return (
-    <div className="space-y-1">
+    <div ref={zoomRef} className="space-y-1" style={{ overscrollBehavior: 'contain' }}>
+      <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
+        <span>当前显示最近 {rows.length} / {total} 根 · 滚轮向上放大，向下缩小</span>
+        {rows.length < total && (
+          <button type="button" className="text-sky-600 hover:underline" onClick={() => setVisibleCount(total)}>
+            重置为 {total} 根
+          </button>
+        )}
+      </div>
       {/* K 线主图 + 背离连线 */}
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
