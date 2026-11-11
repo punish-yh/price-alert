@@ -1,6 +1,6 @@
 """BTC 候选/确认背离监控 + 用户自定义信号组合告警
 
-- 标的固定 BTCUSDT（合约优先），周期 1h / 4h / 1d，每 POLL_INTERVAL 秒（默认 5 分钟）检测。
+- 标的固定 BTCUSDT（合约优先），周期 15m / 1h / 4h / 1d，每 POLL_INTERVAL 秒（默认 5 分钟）检测。
 - 候选背离：完整保留旧实时逻辑，左右各 3 根摆动点，比较已确认摆动点与其后即时极值；
   包含正在走的 K 线，可能随行情形成或消失。
 - 确认背离：与参考网站公开算法一致，只使用已收盘 K 线；价格拐点左 5、右 2，
@@ -24,7 +24,7 @@ from . import config, database, poller, secpoller
 log = logging.getLogger("divpoller")
 
 SYMBOL = "BTCUSDT"
-DIV_INTERVALS = ("1h", "4h", "1d")
+DIV_INTERVALS = ("15m", "1h", "4h", "1d")
 KINDS = ("volume", "rsi", "obv", "macd", "macd_area")
 KIND_CN = {
     "volume": "量价",
@@ -457,9 +457,14 @@ async def _send_div_webhook(client: httpx.AsyncClient, alert: dict) -> tuple[boo
     stage_cn = "候选" if alert.get("signal_stage") == "candidate" else "确认"
     stage_note = "实时候选，可能消失" if stage_cn == "候选" else "右侧 2 根已收盘"
     kinds_cn = "、".join(KIND_CN[k] for k in alert["kinds"])
+    condition = (
+        f"{len(alert['kinds'])} 种 ≥ 阈值 {alert['min_count']}"
+        if alert["min_count"] > 1
+        else "任一已选背离"
+    )
     text = (
-        f"【{stage_cn}背离告警】{alert['symbol']} {alert['interval']} {direction_cn}组合"
-        f"「{alert['rule_name']}」（{len(alert['kinds'])} 种 ≥ 阈值 {alert['min_count']}）："
+        f"【{stage_cn}背离告警】{alert['symbol']} {alert['interval']} {direction_cn}"
+        f"「{alert['rule_name']}」（{condition}）："
         f"{kinds_cn}（{stage_note}；检测时间 {time_str}）"
     )
     payload = {
@@ -535,6 +540,8 @@ async def _eval_alerts(
     for rule in rules:
         if not rule.get("enabled", True) or interval not in rule["intervals"]:
             continue
+        # 未设置数量阈值时，任意一种已选背离即触发；旧规则的数值阈值保持不变。
+        min_count = rule.get("min_count") or 1
         selected = rule.get("signal_stage", "confirmed")
         stages = ("candidate", "confirmed") if selected == "both" else (selected,)
         for stage in stages:
@@ -554,11 +561,11 @@ async def _eval_alerts(
                     if stage == "confirmed"
                     else "candidate"
                 )
-                active = len(matched) >= rule["min_count"] and state.get(key) == signature
-                if len(matched) >= rule["min_count"] and not active:
+                active = len(matched) >= min_count and state.get(key) == signature
+                if len(matched) >= min_count and not active:
                     details = {k: divs[direction][k] for k in matched}
                     alert_id = database.add_div_alert(
-                        SYMBOL, interval, direction, matched, details, rule["min_count"], rule["name"], stage
+                        SYMBOL, interval, direction, matched, details, min_count, rule["name"], stage
                     )
                     stage_cn = "候选" if stage == "candidate" else "确认"
                     log.info("%s背离告警 %s %s %s 规则「%s」：%s", stage_cn, SYMBOL, interval, direction, rule["name"], matched)
@@ -568,7 +575,7 @@ async def _eval_alerts(
                         _schedule_div_webhook(client, alert_id, alert)
                     state[key] = signature
                     changed = True
-                elif len(matched) < rule["min_count"] and state.get(key) not in (None, ""):
+                elif len(matched) < min_count and state.get(key) not in (None, ""):
                     state[key] = ""
                     changed = True
     if changed:

@@ -157,7 +157,7 @@ export interface CorrHistoryPoint {
 
 // ---------------- BTC 背离监控 ----------------
 
-export type DivInterval = '1h' | '4h' | '1d'
+export type DivInterval = '15m' | '1h' | '4h' | '1d'
 export type DivKind = 'volume' | 'rsi' | 'obv' | 'macd' | 'macd_area'
 export type DivDirection = 'top' | 'bottom'
 
@@ -234,7 +234,7 @@ export interface DivRule {
   id: number
   name: string
   kinds: DivKind[]
-  min_count: number
+  min_count: number | null
   intervals: DivInterval[]
   direction: 'both' | DivDirection
   signal_stage: DivSignalStage | 'both'

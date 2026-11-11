@@ -616,7 +616,7 @@ class DivRuleUpdate(BaseModel):
     id: int = Field(default=0, ge=0)
     name: str = Field(max_length=50)
     kinds: list[str]
-    min_count: int = Field(ge=2, le=5)
+    min_count: int | None = Field(default=None, ge=2, le=5)
     intervals: list[str]
     direction: str = "both"
     signal_stage: str = "confirmed"
@@ -659,12 +659,12 @@ async def div_rule_save(
         raise HTTPException(400, "请至少选择一种有效的背离类型")
     intervals = list(dict.fromkeys(body.intervals))
     if not intervals or any(i not in divpoller.DIV_INTERVALS for i in intervals):
-        raise HTTPException(400, "请至少选择一个有效周期（1h / 4h / 1d）")
+        raise HTTPException(400, "请至少选择一个有效周期（15m / 1h / 4h / 1d）")
     if body.direction not in ("both", "top", "bottom"):
         raise HTTPException(400, "方向仅支持双向、仅顶或仅底")
     if body.signal_stage not in ("candidate", "confirmed", "both"):
         raise HTTPException(400, "信号类型仅支持候选、确认或两者")
-    if body.min_count > len(kinds):
+    if body.min_count is not None and body.min_count > len(kinds):
         raise HTTPException(400, "告警数量阈值不能大于已选背离种类数")
 
     rules = divpoller.get_rules()

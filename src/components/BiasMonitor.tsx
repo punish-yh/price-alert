@@ -96,10 +96,12 @@ function BiasCharts({ overview, interval, triggerPrice }: { overview: BiasOvervi
   const [visibleCount, setVisibleCount] = useState(total)
   const [endOffset, setEndOffset] = useState(0)
   const zoomRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ startX: number; startOffset: number } | null>(null)
 
   useEffect(() => {
     setVisibleCount(total)
     setEndOffset(0)
+    dragRef.current = null
   }, [interval, total])
 
   useEffect(() => {
@@ -150,6 +152,14 @@ function BiasCharts({ overview, interval, triggerPrice }: { overview: BiasOvervi
     setEndOffset(total - start - focusCount)
   }
 
+  function panTo(clientX: number) {
+    const drag = dragRef.current
+    const width = zoomRef.current?.clientWidth ?? 0
+    if (!drag || width <= 0) return
+    const delta = Math.round(((clientX - drag.startX) * count) / width)
+    setEndOffset(Math.max(0, Math.min(total - count, drag.startOffset + delta)))
+  }
+
   const xAxis = (hide: boolean) => (
     <XAxis
       dataKey="open_time"
@@ -166,9 +176,29 @@ function BiasCharts({ overview, interval, triggerPrice }: { overview: BiasOvervi
 
   return (
     <div className="space-y-4">
-      <div ref={zoomRef} className="space-y-2" style={{ overscrollBehavior: 'contain' }}>
+      <div
+        ref={zoomRef}
+        className="cursor-grab select-none space-y-2 active:cursor-grabbing"
+        style={{ overscrollBehavior: 'contain', touchAction: 'pan-y' }}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || (event.target as Element).closest('button')) return
+          dragRef.current = { startX: event.clientX, startOffset: endOffset }
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }}
+        onPointerMove={(event) => {
+          if (!dragRef.current) return
+          event.preventDefault()
+          panTo(event.clientX)
+        }}
+        onPointerUp={(event) => {
+          dragRef.current = null
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+        }}
+        onPointerCancel={() => { dragRef.current = null }}
+        onLostPointerCapture={() => { dragRef.current = null }}
+      >
         <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
-          <span>显示 {rows.length} / {total} 根<span className="hidden sm:inline"> · 滚轮缩放，点击下方信号可定位</span></span>
+          <span>显示 {rows.length} / {total} 根<span className="hidden sm:inline"> · 滚轮缩放，按住鼠标左右拖动，点击下方信号可定位</span></span>
           <div className="flex items-center gap-3">
             <button type="button" className="text-sky-600 disabled:opacity-40" disabled={rows.length <= 40} onClick={() => zoom(0.8)}>放大</button>
             <button type="button" className="text-sky-600 disabled:opacity-40" disabled={rows.length >= total} onClick={() => zoom(1.25)}>缩小</button>

@@ -28,7 +28,8 @@ function fmtX(ms: number, interval: string) {
   const d = new Date(ms)
   const md = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   if (interval === '1d') return md
-  return `${md} ${String(d.getHours()).padStart(2, '0')}:00`
+  const minutes = interval === '15m' ? String(d.getMinutes()).padStart(2, '0') : '00'
+  return `${md} ${String(d.getHours()).padStart(2, '0')}:${minutes}`
 }
 
 function fmtFull(ms: number) {
@@ -135,11 +136,15 @@ export default function DivCharts({
 }) {
   const total = overview.candles.length
   const [visibleCount, setVisibleCount] = useState(total)
+  const [endOffset, setEndOffset] = useState(0)
   const [isMobile, setIsMobile] = useState(false)
   const zoomRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ startX: number; startOffset: number } | null>(null)
 
   useEffect(() => {
     setVisibleCount(total)
+    setEndOffset(0)
+    dragRef.current = null
   }, [interval, total])
 
   useEffect(() => {
@@ -160,8 +165,9 @@ export default function DivCharts({
       const factor = event.deltaY < 0 ? 0.8 : 1.25
       setVisibleCount((current) => {
         const min = Math.min(20, total)
-        const next = Math.round(current * factor)
-        return Math.max(min, Math.min(total, next))
+        const next = Math.max(min, Math.min(total, Math.round(current * factor)))
+        setEndOffset((offset) => Math.min(offset, total - next))
+        return next
       })
     }
     node.addEventListener('wheel', handleWheel, { passive: false })
@@ -176,17 +182,28 @@ export default function DivCharts({
     dea: overview.indicators.dea[i],
     hist: overview.indicators.hist[i],
   }))
-  const rows = allRows.slice(-Math.min(visibleCount, total))
+  const count = Math.min(visibleCount, total)
+  const end = total - endOffset
+  const rows = allRows.slice(Math.max(0, end - count), end)
+
+  function panTo(clientX: number) {
+    const drag = dragRef.current
+    const width = zoomRef.current?.clientWidth ?? 0
+    if (!drag || width <= 0) return
+    const delta = Math.round(((clientX - drag.startX) * count) / width)
+    setEndOffset(Math.max(0, Math.min(total - count, drag.startOffset + delta)))
+  }
 
   // 候选、当前确认、历史确认分别绘制；是否触发过告警不影响任何信号的展示。
   const divLines: DivLine[] = []
   const visibleStart = rows[0]?.open_time ?? 0
+  const visibleEnd = rows.at(-1)?.open_time ?? 0
   if (showHistory) {
     for (const [i, signal] of (overview.history ?? []).entries()) {
       const isCurrent = overview.divergences[signal.direction][signal.kind]?.confirmed_at === signal.confirmed_at
       if (isCurrent) continue
       const line = signalLine(signal.direction, signal.kind, signal, `history-${i}`, 'history')
-      if (line.x1 >= visibleStart) divLines.push(line)
+      if (line.x2 >= visibleStart && line.x1 <= visibleEnd) divLines.push(line)
     }
   }
   for (const direction of ['top', 'bottom'] as DivDirection[]) {
@@ -215,18 +232,42 @@ export default function DivCharts({
   )
 
   return (
-    <div ref={zoomRef} className="space-y-1" style={{ overscrollBehavior: 'contain' }}>
+    <div
+      ref={zoomRef}
+      className="cursor-grab select-none space-y-1 active:cursor-grabbing"
+      style={{ overscrollBehavior: 'contain', touchAction: 'pan-y' }}
+      onPointerDown={(event) => {
+        if (event.button !== 0 || (event.target as Element).closest('button')) return
+        dragRef.current = { startX: event.clientX, startOffset: endOffset }
+        event.currentTarget.setPointerCapture(event.pointerId)
+      }}
+      onPointerMove={(event) => {
+        if (!dragRef.current) return
+        event.preventDefault()
+        panTo(event.clientX)
+      }}
+      onPointerUp={(event) => {
+        dragRef.current = null
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+      }}
+      onPointerCancel={() => { dragRef.current = null }}
+      onLostPointerCapture={() => { dragRef.current = null }}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
         <span>
-          当前显示最近 {rows.length} / {total} 根
-          <span className="hidden sm:inline"> · 滚轮向上放大，向下缩小</span>
+          当前显示 {rows.length} / {total} 根
+          <span className="hidden sm:inline"> · 滚轮缩放，按住鼠标左右拖动</span>
         </span>
         <div className="flex items-center gap-3">
           <button
             type="button"
             className="text-sky-600 disabled:opacity-40 sm:hidden"
             disabled={rows.length <= 20}
-            onClick={() => setVisibleCount((n) => Math.max(20, Math.round(n * 0.8)))}
+            onClick={() => setVisibleCount((current) => {
+              const next = Math.max(20, Math.round(current * 0.8))
+              setEndOffset((offset) => Math.min(offset, total - next))
+              return next
+            })}
           >
             放大
           </button>
@@ -234,13 +275,17 @@ export default function DivCharts({
             type="button"
             className="text-sky-600 disabled:opacity-40 sm:hidden"
             disabled={rows.length >= total}
-            onClick={() => setVisibleCount((n) => Math.min(total, Math.round(n * 1.25)))}
+            onClick={() => setVisibleCount((current) => {
+              const next = Math.min(total, Math.round(current * 1.25))
+              setEndOffset((offset) => Math.min(offset, total - next))
+              return next
+            })}
           >
             缩小
           </button>
-          {rows.length < total && (
-            <button type="button" className="text-sky-600 hover:underline" onClick={() => setVisibleCount(total)}>
-              重置为 {total} 根
+          {(endOffset > 0 || rows.length < total) && (
+            <button type="button" className="text-sky-600 hover:underline" onClick={() => { setVisibleCount(total); setEndOffset(0) }}>
+              重置为最近 {total} 根
             </button>
           )}
         </div>
@@ -262,7 +307,7 @@ export default function DivCharts({
             />
             <Tooltip content={<PriceTooltip />} />
             <Bar dataKey={(r: { low: number; high: number }) => [r.low, r.high]} shape={<Candle />} isAnimationActive={false} />
-            {divLines.map((l) => (
+            {divLines.filter((l) => l.x2 >= visibleStart && l.x1 <= visibleEnd).map((l) => (
               <ReferenceLine
                 key={l.key}
                 segment={[
@@ -276,7 +321,8 @@ export default function DivCharts({
                 label={isMobile && l.stage === 'history' && rows.length > 60 ? undefined : {
                   value: `${l.stage === 'candidate' ? '候选·' : l.stage === 'confirmed' ? '确认·' : ''}${DIV_KIND_CN[l.kind]}`,
                   position: 'middle',
-                  fontSize: l.stage === 'history' ? 9 : 10,
+                  fontSize: l.stage === 'history' ? 11 : 13,
+                  fontWeight: l.stage === 'history' ? 500 : 600,
                   fill: l.color,
                   fillOpacity: l.stage === 'history' ? 0.55 : 1,
                 }}

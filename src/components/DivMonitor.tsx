@@ -36,7 +36,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from 'sonner'
 
-const INTERVALS: DivInterval[] = ['1h', '4h', '1d']
+const INTERVALS: DivInterval[] = ['15m', '1h', '4h', '1d']
 const KINDS: DivKind[] = ['volume', 'rsi', 'obv', 'macd', 'macd_area']
 const DIRECTION_CN: Record<DivRule['direction'], string> = {
   both: '顶 + 底双向',
@@ -49,7 +49,7 @@ function emptyRule(): DivRule {
     id: 0,
     name: '',
     kinds: [...KINDS],
-    min_count: 2,
+    min_count: null,
     intervals: [...INTERVALS],
     direction: 'both',
     signal_stage: 'confirmed',
@@ -67,7 +67,8 @@ function fmtNum(v: number) {
 function fmtT(ms: number, interval: string) {
   const d = new Date(ms)
   const md = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  return interval === '1d' ? md : `${md} ${String(d.getHours()).padStart(2, '0')}:00`
+  const minutes = interval === '15m' ? String(d.getMinutes()).padStart(2, '0') : '00'
+  return interval === '1d' ? md : `${md} ${String(d.getHours()).padStart(2, '0')}:${minutes}`
 }
 
 function detailText(kind: DivKind, det: DivDetail, interval: string) {
@@ -104,7 +105,8 @@ function RuleEditor({
   function toggleKind(kind: DivKind, checked: boolean) {
     setDraft((old) => {
       const kinds = checked ? [...old.kinds, kind] : old.kinds.filter((k) => k !== kind)
-      return { ...old, kinds, min_count: Math.min(old.min_count, Math.max(2, kinds.length)) }
+      const minCount = old.min_count === null ? null : Math.min(old.min_count, Math.max(2, kinds.length))
+      return { ...old, kinds, min_count: minCount }
     })
   }
 
@@ -128,7 +130,7 @@ function RuleEditor({
       toast.error('请至少选择一个生效周期')
       return
     }
-    if (draft.min_count > draft.kinds.length) {
+    if (draft.min_count !== null && draft.min_count > draft.kinds.length) {
       toast.error('数量阈值不能大于已选背离种类数')
       return
     }
@@ -151,7 +153,7 @@ function RuleEditor({
         <DialogHeader>
           <DialogTitle>{initial ? '编辑告警组合' : '新建告警组合'}</DialogTitle>
           <DialogDescription>
-            同一方向下，所选成员中同类信号达到数量阈值时触发；候选与确认是否告警由下方信号类型决定
+            默认任意一种已选背离触发即告警；勾选数量阈值后才按同方向组合告警，候选与确认由下方信号类型决定
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -178,15 +180,27 @@ function RuleEditor({
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div className="space-y-1.5">
-              <Label>数量阈值</Label>
-              <Select value={String(draft.min_count)} onValueChange={(v) => setDraft({ ...draft, min_count: Number(v) })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {[2, 3, 4, 5].map((n) => (
-                    <SelectItem key={n} value={String(n)} disabled={n > draft.kinds.length}>≥ {n} 种</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>数量阈值（可选）</Label>
+              <label className="flex h-9 items-center gap-2 text-xs">
+                <Checkbox
+                  checked={draft.min_count !== null}
+                  disabled={draft.kinds.length < 2}
+                  onCheckedChange={(v) => setDraft({ ...draft, min_count: v === true ? 2 : null })}
+                />
+                组合告警
+              </label>
+              {draft.min_count !== null ? (
+                <Select value={String(draft.min_count)} onValueChange={(v) => setDraft({ ...draft, min_count: Number(v) })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {[2, 3, 4, 5].map((n) => (
+                      <SelectItem key={n} value={String(n)} disabled={n > draft.kinds.length}>≥ {n} 种</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <p className="text-xs leading-relaxed text-muted-foreground">任一已选背离触发即告警</p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label>告警方向</Label>
@@ -293,7 +307,9 @@ function RulesPanel({ rules, onChanged }: { rules: DivRule[]; onChanged: () => v
             <div key={rule.id} className="rounded-lg border border-border/60 px-3 py-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">{rule.name}</span>
-                <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-700">≥ {rule.min_count} 种</Badge>
+                <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-700">
+                  {rule.min_count === null ? '任一背离' : `≥ ${rule.min_count} 种`}
+                </Badge>
                 <Badge variant="outline">{DIRECTION_CN[rule.direction]}</Badge>
                 <Badge variant="outline">{rule.signal_stage === 'both' ? '候选 + 确认' : rule.signal_stage === 'candidate' ? '仅候选' : '仅确认'}</Badge>
                 <Badge variant="outline">{rule.intervals.join(' / ')}</Badge>
@@ -496,7 +512,7 @@ export default function DivMonitor({
         <CardHeader className="space-y-1 py-4">
           <CardTitle className="text-base">告警组合规则</CardTitle>
           <CardDescription>
-            每条规则自由组合背离种类、数量阈值、生效周期、方向及候选／确认信号类型，饭碗可单独关闭
+            每条规则自由选择背离种类、生效周期、方向及候选／确认信号类型；不选数量阈值时任一背离告警，饭碗可单独关闭
           </CardDescription>
         </CardHeader>
         <CardContent className="pt-0">
@@ -535,7 +551,9 @@ export default function DivMonitor({
                     <span className="font-mono font-semibold">{a.symbol}</span>
                     <Badge variant="outline" className="text-muted-foreground">{a.interval}</Badge>
                     <Badge variant="secondary">规则：{a.rule_name || '旧版默认组合'}</Badge>
-                    <span className="text-xs text-muted-foreground">{a.kinds.length} 种 ≥ 阈值 {a.min_count}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {a.min_count === 1 ? `任一背离 · 本次 ${a.kinds.length} 种` : `${a.kinds.length} 种 ≥ 阈值 ${a.min_count}`}
+                    </span>
                     <span className="ml-auto flex items-center gap-2">
                       <span className="text-xs text-muted-foreground">{fmtTime(a.created_at)}</span>
                       {unreadRow && <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => handleRead(a.id)}>已阅</Button>}
