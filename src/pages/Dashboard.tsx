@@ -82,8 +82,8 @@ export default function Dashboard({ username, onLogout }: { username: string; on
       macd: 'MACD(DIF)',
       macd_area: 'MACD面积',
     }
-    toast.warning(`${a.symbol} ${a.interval} ${a.direction === 'top' ? '顶背离' : '底背离'}组合`, {
-      description: `${a.kinds.map((k) => kindCN[k] ?? k).join('、')}（${a.kinds.length} 种 ≥ 阈值 ${a.min_count}）`,
+    toast.warning(`${a.symbol} ${a.interval} 确认${a.direction === 'top' ? '顶背离' : '底背离'}组合`, {
+      description: `${a.kinds.map((k) => kindCN[k] ?? k).join('、')}（${a.kinds.length} 种 ≥ 阈值 ${a.min_count}，右侧 2 根已收盘）`,
       duration: 15000,
     })
   }, [])

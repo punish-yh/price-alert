@@ -1,20 +1,15 @@
-"""BTC 背离监控：量价 / RSI / OBV / MACD(DIF) / MACD面积 顶底背离 + 自定义组合告警
+"""BTC 候选/确认背离监控 + 用户自定义确认信号组合告警
 
-- 标的固定 BTCUSDT（合约优先），周期 1h / 4h / 1d，每 POLL_INTERVAL 秒（默认 5 分钟）检测一次
-- **使用正在走的 K 线**，不等收盘；最近 365 根 K 线、指标与历史背离缓存供前端画图
-- 摆动点：左右各 3 根确认的 swing high/low；当前背离采用「前一个已确认摆动点 + 当前即时极值」，
-  后一个点未确认，因此背离可能随行情形成/消失，告警按 (规则, 周期, 方向) 状态机去重
-- 历史背离：对所有相邻已确认摆动点对、相邻同向 MACD 柱体区域对逐一判定，
-  与当前信号一起返回（图表上历史信号淡色、当前信号亮色，触发与未触发告警的都展示）
-- 五种背离口径：
-  volume    量价：顶=价创新高但量缩，底=价创新低但量缩（后摆动点成交量均低于前一摆动点）
-  rsi       RSI(14) Wilder：价格 HH/LL，RSI LH/HL
-  obv       OBV：价格 HH/LL，OBV LH/HL
-  macd      MACD(12,26,9) 的 DIF：价格 HH/LL，DIF LH/HL
-  macd_area MACD 面积：柱体按零轴分波，最近两波同向区域，后波价格更极端但柱体面积绝对值更小
-- 组合规则（可建多条）：任选背离种类 + 数量阈值 N + 生效周期 + 方向（顶/底/双向）；
-  某规则成员中同方向当前成立的种类数 ≥ N 即触发该规则，进入告警只报一次，解除后重新武装
-- 通知：网页（SSE + 告警记录）必选，饭碗 webhook 每条规则可选
+- 标的固定 BTCUSDT（合约优先），周期 1h / 4h / 1d，每 POLL_INTERVAL 秒（默认 5 分钟）检测。
+- 候选背离：完整保留旧实时逻辑，左右各 3 根摆动点，比较已确认摆动点与其后即时极值；
+  包含正在走的 K 线，可能随行情形成或消失，只展示、不告警。
+- 确认背离：与参考网站公开算法一致，只使用已收盘 K 线；价格拐点左 5、右 2，
+  指标取拐点前后各 2 根极值，两拐点间隔 5~60 根，右侧第 2 根收盘时确认。
+- 确认量价：比较两段走势的累计成交量；确认 MACD 面积：从拐点附近同号柱定位连续区域，
+  面积只累计到确认时刻。RSI(14) Wilder、OBV、MACD(12,26,9) DIF 与参考口径一致。
+- 最近 365 根 K 线、候选信号、当前确认信号及历史确认信号均供前端画图，是否告警不影响展示。
+- 只有确认背离进入组合规则；按规则、周期、方向和确认时间戳去重，连续不同的新信号不会被旧状态挡住。
+- 通知：网页（SSE + 告警记录）必选，饭碗 webhook 每条规则可选。
 """
 import asyncio
 import json
@@ -38,8 +33,13 @@ KIND_CN = {
     "macd": "MACD(DIF)",
     "macd_area": "MACD面积",
 }
-PIVOT_LEFT = 3
+PIVOT_LEFT = 3  # 候选背离沿用旧逻辑
 PIVOT_RIGHT = 3
+CONFIRMED_LEFT = 5  # 确认背离与参考网站一致：左 5、右 2
+CONFIRMED_RIGHT = 2
+CONFIRMED_VALUE_WINDOW = 2
+CONFIRMED_GAP_MIN = 5
+CONFIRMED_GAP_MAX = 60
 CHART_CANDLES = 365
 KLINE_LIMIT = 450  # 覆盖 365 根展示 + 指标预热（EMA26 / DEA9 / RSI14 收敛）
 
@@ -68,8 +68,8 @@ def get_rules() -> list[dict]:
 
 # ---------------- 指标计算 ----------------
 
-def rsi_series(closes: list[float], period: int = 14) -> list[float | None]:
-    """Wilder RSI：初始均值用前 period 个涨跌的 SMA，此后递推平滑"""
+def rsi_series(closes: list[float], period: int = 14, flat_value: float = 50.0) -> list[float | None]:
+    """Wilder RSI；候选沿用旧平盘值 50，确认信号传 0 与参考网站一致。"""
     out: list[float | None] = [None] * len(closes)
     if len(closes) <= period:
         return out
@@ -80,7 +80,7 @@ def rsi_series(closes: list[float], period: int = 14) -> list[float | None]:
 
     def value() -> float:
         if avg_l == 0:
-            return 100.0 if avg_g > 0 else 50.0
+            return 100.0 if avg_g > 0 else flat_value
         return 100 - 100 / (1 + avg_g / avg_l)
 
     out[period] = value()
@@ -254,8 +254,8 @@ def _area_divergence(candles: list[dict], hist: list[float | None], direction: s
     return _area_compare(candles, same[-2], same[-1], direction)
 
 
-def detect_divergences(candles: list[dict], ind: dict) -> dict:
-    """当前信号：{'top': {kind: detail}, 'bottom': {kind: detail}}"""
+def detect_candidates(candles: list[dict], ind: dict) -> dict:
+    """候选信号：完整保留旧实时逻辑，每 5 分钟计算并包含正在走的 K 线。"""
     highs, lows = confirmed_pivots(candles)
     out = {"top": {}, "bottom": {}}
     for direction, pivots in (("top", highs), ("bottom", lows)):
@@ -272,52 +272,174 @@ def detect_divergences(candles: list[dict], ind: dict) -> dict:
     return out
 
 
-def detect_history(candles: list[dict], ind: dict) -> list[dict]:
-    """历史信号：对所有相邻已确认摆动点对、相邻同向 MACD 区域对逐一判定。
-    返回 [{direction, kind, ...detail}]，供图表标注所有历史背离（无论是否触发过告警）。"""
-    highs, lows = confirmed_pivots(candles)
-    regions = _hist_regions(ind["hist"])
-    signals: list[dict] = []
-    for direction, pivots in (("top", highs), ("bottom", lows)):
-        for p1, p2 in zip(pivots, pivots[1:]):
-            if direction == "top":
-                price1, price2 = candles[p1]["high"], candles[p2]["high"]
-                if price2 <= price1:
+def _confirmed_is_pivot(candles: list[dict], i: int, direction: str) -> bool:
+    """参考网站口径：低点不高于左 5 根且严格低于右 2 根；高点反之。"""
+    value = candles[i]["low" if direction == "bottom" else "high"]
+    for j in range(i - CONFIRMED_LEFT, i):
+        other = candles[j]["low" if direction == "bottom" else "high"]
+        if (direction == "bottom" and other < value) or (direction == "top" and other > value):
+            return False
+    for j in range(i + 1, i + CONFIRMED_RIGHT + 1):
+        other = candles[j]["low" if direction == "bottom" else "high"]
+        if (direction == "bottom" and other <= value) or (direction == "top" and other >= value):
+            return False
+    return True
+
+
+def _confirmed_value_near(values: list, i: int, direction: str, end: int) -> float | None:
+    """指标取价格拐点前后各 2 根里的最低值（底）或最高值（顶）。"""
+    selected = None
+    for j in range(max(0, i - CONFIRMED_VALUE_WINDOW), min(end, i + CONFIRMED_VALUE_WINDOW) + 1):
+        value = values[j]
+        if value is None:
+            return None
+        if selected is None or (direction == "bottom" and value < selected) or (direction == "top" and value > selected):
+            selected = value
+    return selected
+
+
+def _confirmed_segment_volume(candles: list[dict], i: int, direction: str, prev_i: int | None) -> float | None:
+    """量价比较两段走势的累计成交量，而不是拐点上的单根成交量。"""
+    start = prev_i + 1 if prev_i is not None else max(0, i - CONFIRMED_GAP_MAX)
+    opposite = "high" if direction == "bottom" else "low"
+    extreme_i = None
+    for j in range(start, i):
+        if extreme_i is None:
+            extreme_i = j
+        elif direction == "bottom" and candles[j][opposite] >= candles[extreme_i][opposite]:
+            extreme_i = j
+        elif direction == "top" and candles[j][opposite] <= candles[extreme_i][opposite]:
+            extreme_i = j
+    if extreme_i is None:
+        return None
+    return sum(candles[j].get("volume", 0.0) for j in range(extreme_i, i + 1))
+
+
+def _confirmed_hist_area(hist: list, i: int, direction: str, end: int) -> dict | None:
+    """从拐点前后 2 根的最深同号柱定位区域，面积只累计到右侧第 2 根确认时。"""
+    negative = direction == "bottom"
+
+    def same_sign(value: float | None) -> bool:
+        return value is not None and (value < 0 if negative else value > 0)
+
+    deepest = None
+    for j in range(max(0, i - CONFIRMED_VALUE_WINDOW), min(end, i + CONFIRMED_VALUE_WINDOW) + 1):
+        value = hist[j]
+        if value is None:
+            return None
+        if same_sign(value) and (
+            deepest is None
+            or (negative and value < hist[deepest])
+            or (not negative and value > hist[deepest])
+        ):
+            deepest = j
+    if deepest is None:
+        return None
+    cap = min(end, i + CONFIRMED_RIGHT)
+    start = deepest
+    while start > 0 and same_sign(hist[start - 1]):
+        start -= 1
+    area_end = deepest
+    while area_end + 1 <= cap and same_sign(hist[area_end + 1]):
+        area_end += 1
+    return {
+        "val": sum(abs(hist[j]) for j in range(start, area_end + 1)),
+        "run": start,
+        "area_end": area_end,
+    }
+
+
+def _confirmed_point(
+    candles: list[dict], ind: dict, kind: str, i: int, direction: str, end: int, prev_i: int | None
+) -> dict:
+    price = candles[i]["low" if direction == "bottom" else "high"]
+    point = {"i": i, "price": price}
+    if kind == "volume":
+        point["val"] = _confirmed_segment_volume(candles, i, direction, prev_i)
+    elif kind == "macd_area":
+        area = _confirmed_hist_area(ind["hist"], i, direction, end)
+        point.update(area or {"val": None})
+    else:
+        key = "dif" if kind == "macd" else kind
+        point["val"] = _confirmed_value_near(ind[key], i, direction, end)
+    return point
+
+
+def _confirmed_pair_hit(kind: str, direction: str, prev: dict, cur: dict) -> bool:
+    if prev.get("val") is None or cur.get("val") is None:
+        return False
+    price_new = cur["price"] < prev["price"] if direction == "bottom" else cur["price"] > prev["price"]
+    if not price_new:
+        return False
+    if kind in ("volume", "macd_area"):
+        return cur["val"] < prev["val"]
+    return cur["val"] > prev["val"] if direction == "bottom" else cur["val"] < prev["val"]
+
+
+def _confirmed_signal(candles: list[dict], kind: str, direction: str, prev: dict, cur: dict, at: int) -> dict:
+    base = {
+        "direction": direction,
+        "kind": kind,
+        "confirmed_at": candles[at]["open_time"],
+    }
+    if kind == "macd_area":
+        return {
+            **base,
+            "a1_start": candles[prev["run"]]["open_time"],
+            "a1_end": candles[prev["area_end"]]["open_time"],
+            "a2_start": candles[cur["run"]]["open_time"],
+            "a2_end": candles[cur["area_end"]]["open_time"],
+            "p1": prev["price"],
+            "p2": cur["price"],
+            "area1": prev["val"],
+            "area2": cur["val"],
+            "p1_time": candles[prev["i"]]["open_time"],
+            "p2_time": candles[cur["i"]]["open_time"],
+        }
+    return {
+        **base,
+        "p1_time": candles[prev["i"]]["open_time"],
+        "p1_price": prev["price"],
+        "p2_time": candles[cur["i"]]["open_time"],
+        "p2_price": cur["price"],
+        "v1": prev["val"],
+        "v2": cur["val"],
+    }
+
+
+def detect_confirmed(candles: list[dict], ind: dict, end: int | None = None) -> tuple[dict, list[dict]]:
+    """参考网站口径的确认背离；默认排除最后一根正在走的 K 线。
+
+    返回（当前收盘刚确认的信号, 全部历史确认信号）。候选背离不参与告警。
+    """
+    last = len(candles) - 2 if end is None else min(end, len(candles) - 1)
+    current = {"top": {}, "bottom": {}}
+    history: list[dict] = []
+    if last < CONFIRMED_LEFT + CONFIRMED_RIGHT:
+        return current, history
+    confirmed_ind = {
+        **ind,
+        "rsi": rsi_series([c["close"] for c in candles], flat_value=0.0),
+    }
+    for direction in ("top", "bottom"):
+        for kind in KINDS:
+            prev = None
+            for i in range(CONFIRMED_LEFT, last - CONFIRMED_RIGHT + 1):
+                if not _confirmed_is_pivot(candles, i, direction):
                     continue
-            else:
-                price1, price2 = candles[p1]["low"], candles[p2]["low"]
-                if price2 >= price1:
-                    continue
-            for kind in ("volume", "rsi", "obv", "macd"):
-                key = "dif" if kind == "macd" else kind
-                v1, v2 = ind[key][p1], ind[key][p2]
-                if v1 is None or v2 is None:
-                    continue
-                if kind == "volume":
-                    ok = v2 < v1  # 量价顶底均为量缩
-                else:
-                    ok = v2 < v1 if direction == "top" else v2 > v1
-                if not ok:
-                    continue
-                signals.append(
-                    {
-                        "direction": direction,
-                        "kind": kind,
-                        "p1_time": candles[p1]["open_time"],
-                        "p1_price": price1,
-                        "p2_time": candles[p2]["open_time"],
-                        "p2_price": price2,
-                        "v1": v1,
-                        "v2": v2,
-                    }
-                )
-        want = 1 if direction == "top" else -1
-        same = [r for r in regions if r["sign"] == want]
-        for a1, a2 in zip(same, same[1:]):
-            detail = _area_compare(candles, a1, a2, direction)
-            if detail:
-                signals.append({"direction": direction, "kind": "macd_area", **detail})
-    return signals
+                cur = _confirmed_point(candles, confirmed_ind, kind, i, direction, last, prev["i"] if prev else None)
+                if prev:
+                    gap = i - prev["i"]
+                    if CONFIRMED_GAP_MIN <= gap <= CONFIRMED_GAP_MAX and _confirmed_pair_hit(kind, direction, prev, cur):
+                        at = i + CONFIRMED_RIGHT
+                        signal = _confirmed_signal(candles, kind, direction, prev, cur, at)
+                        history.append(signal)
+                        if at == last:
+                            detail = {k: v for k, v in signal.items() if k not in ("direction", "kind")}
+                            current[direction][kind] = detail
+                prev = cur
+    history.sort(key=lambda s: (s["confirmed_at"], 0 if s["direction"] == "bottom" else 1, s["kind"]))
+    return current, history
 
 
 # ---------------- 告警 ----------------
@@ -334,9 +456,9 @@ async def _send_div_webhook(client: httpx.AsyncClient, alert: dict) -> tuple[boo
     direction_cn = "顶背离" if alert["direction"] == "top" else "底背离"
     kinds_cn = "、".join(KIND_CN[k] for k in alert["kinds"])
     text = (
-        f"【背离告警】{alert['symbol']} {alert['interval']} {direction_cn}组合"
+        f"【确认背离告警】{alert['symbol']} {alert['interval']} {direction_cn}组合"
         f"「{alert['rule_name']}」（{len(alert['kinds'])} 种 ≥ 阈值 {alert['min_count']}）："
-        f"{kinds_cn}（检测时间 {time_str}）"
+        f"{kinds_cn}（右侧 2 根已收盘；检测时间 {time_str}）"
     )
     payload = {
         "message": text,
@@ -399,6 +521,7 @@ def _schedule_div_webhook(client: httpx.AsyncClient, alert_id: int, alert: dict)
 
 
 async def _eval_alerts(client: httpx.AsyncClient, interval: str, rules: list[dict], divs: dict) -> None:
+    """仅评估右侧两根收盘后的确认背离；按确认时间戳去重，候选背离不进入这里。"""
     try:
         state = json.loads(database.get_state(DIV_STATE_KEY) or "{}")
     except ValueError:
@@ -412,21 +535,22 @@ async def _eval_alerts(client: httpx.AsyncClient, interval: str, rules: list[dic
                 continue
             matched = [k for k in KINDS if k in rule["kinds"] and k in divs[direction]]
             key = f"{rule['id']}|{interval}|{direction}"
-            active = bool(state.get(key))
+            signature = "|".join(f"{k}:{divs[direction][k].get('confirmed_at', '')}" for k in matched)
+            active = len(matched) >= rule["min_count"] and state.get(key) == signature
             if len(matched) >= rule["min_count"] and not active:
                 details = {k: divs[direction][k] for k in matched}
                 alert_id = database.add_div_alert(
                     SYMBOL, interval, direction, matched, details, rule["min_count"], rule["name"]
                 )
-                log.info("背离告警 %s %s %s 规则「%s」：%s", SYMBOL, interval, direction, rule["name"], matched)
+                log.info("确认背离告警 %s %s %s 规则「%s」：%s", SYMBOL, interval, direction, rule["name"], matched)
                 alert = database.get_div_alert(alert_id)
                 secpoller.publish({"type": "div_alert", "alert": alert})
                 if rule.get("notify_webhook", True):
                     _schedule_div_webhook(client, alert_id, alert)
-                state[key] = True
+                state[key] = signature
                 changed = True
-            elif len(matched) < rule["min_count"] and active:
-                state[key] = False  # 组合解除，重新武装
+            elif len(matched) < rule["min_count"] and state.get(key) not in (None, ""):
+                state[key] = ""  # 当前确认时刻结束，等待下一次新的确认信号
                 changed = True
     if changed:
         database.set_state(DIV_STATE_KEY, json.dumps(state))
@@ -458,17 +582,18 @@ async def div_poller_loop() -> None:
                     if len(candles) < 40:
                         continue
                     ind = compute_indicators(candles)
-                    divs = detect_divergences(candles, ind)
-                    history = detect_history(candles, ind)
+                    candidates = detect_candidates(candles, ind)
+                    confirmed, history = detect_confirmed(candles, ind)
                     n = min(len(candles), CHART_CANDLES)
                     div_cache[interval] = {
                         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                         "candles": candles[-n:],
                         "indicators": {k: v[-n:] for k, v in ind.items()},
-                        "divergences": divs,
+                        "candidates": candidates,
+                        "divergences": confirmed,
                         "history": history,
                     }
-                    await _eval_alerts(client, interval, rules, divs)
+                    await _eval_alerts(client, interval, rules, confirmed)
                 div_status.update(
                     ok=True,
                     error="",

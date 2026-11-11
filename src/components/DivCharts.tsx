@@ -89,6 +89,8 @@ function PriceTooltip({ active, payload }: { active?: boolean; payload?: { paylo
   )
 }
 
+type DivStage = 'candidate' | 'confirmed' | 'history'
+
 type DivLine = {
   key: string
   kind: DivKind
@@ -97,7 +99,7 @@ type DivLine = {
   x2: number
   y2: number
   color: string
-  historical: boolean
+  stage: DivStage
 }
 
 function signalLine(
@@ -105,17 +107,21 @@ function signalLine(
   kind: DivKind,
   det: DivOverviewInterval['history'][number],
   key: string,
-  historical: boolean
+  stage: DivStage
 ): DivLine {
   const common = {
     key,
     kind,
     color: direction === 'top' ? DOWN : UP,
-    historical,
+    stage,
   }
-  return kind === 'macd_area'
-    ? { ...common, x1: det.a1_start, y1: det.p1, x2: det.a2_end, y2: det.p2 }
-    : { ...common, x1: det.p1_time, y1: det.p1_price, x2: det.p2_time, y2: det.p2_price }
+  if (kind === 'macd_area' && stage === 'candidate') {
+    return { ...common, x1: det.a1_start, y1: det.p1, x2: det.a2_end, y2: det.p2 }
+  }
+  if (kind === 'macd_area') {
+    return { ...common, x1: det.p1_time, y1: det.p1, x2: det.p2_time, y2: det.p2 }
+  }
+  return { ...common, x1: det.p1_time, y1: det.p1_price, x2: det.p2_time, y2: det.p2_price }
 }
 
 export default function DivCharts({
@@ -172,19 +178,25 @@ export default function DivCharts({
   }))
   const rows = allRows.slice(-Math.min(visibleCount, total))
 
-  // 当前与历史信号都展示：当前深色，历史浅色虚线；是否触发过告警不影响绘制。
+  // 候选、当前确认、历史确认分别绘制；是否触发过告警不影响任何信号的展示。
   const divLines: DivLine[] = []
   const visibleStart = rows[0]?.open_time ?? 0
   if (showHistory) {
     for (const [i, signal] of (overview.history ?? []).entries()) {
-      const line = signalLine(signal.direction, signal.kind, signal, `history-${i}`, true)
+      const isCurrent = overview.divergences[signal.direction][signal.kind]?.confirmed_at === signal.confirmed_at
+      if (isCurrent) continue
+      const line = signalLine(signal.direction, signal.kind, signal, `history-${i}`, 'history')
       if (line.x1 >= visibleStart) divLines.push(line)
     }
   }
   for (const direction of ['top', 'bottom'] as DivDirection[]) {
+    for (const [kind, det] of Object.entries(overview.candidates[direction])) {
+      if (!det) continue
+      divLines.push(signalLine(direction, kind as DivKind, det as DivOverviewInterval['history'][number], `candidate-${direction}-${kind}`, 'candidate'))
+    }
     for (const [kind, det] of Object.entries(overview.divergences[direction])) {
       if (!det) continue
-      divLines.push(signalLine(direction, kind as DivKind, det as DivOverviewInterval['history'][number], `current-${direction}-${kind}`, false))
+      divLines.push(signalLine(direction, kind as DivKind, det as DivOverviewInterval['history'][number], `confirmed-${direction}-${kind}`, 'confirmed'))
     }
   }
 
@@ -258,15 +270,15 @@ export default function DivCharts({
                   { x: l.x2, y: l.y2 },
                 ]}
                 stroke={l.color}
-                strokeOpacity={l.historical ? 0.35 : 0.95}
-                strokeWidth={l.historical ? 1 : 1.8}
-                strokeDasharray={l.historical ? '3 3' : l.kind === 'macd_area' ? '6 3' : undefined}
-                label={isMobile && l.historical && rows.length > 60 ? undefined : {
-                  value: DIV_KIND_CN[l.kind],
+                strokeOpacity={l.stage === 'history' ? 0.35 : l.stage === 'candidate' ? 0.8 : 0.95}
+                strokeWidth={l.stage === 'history' ? 1 : l.stage === 'candidate' ? 1.4 : 2}
+                strokeDasharray={l.stage === 'history' ? '3 3' : l.stage === 'candidate' ? '2 3' : l.kind === 'macd_area' ? '6 3' : undefined}
+                label={isMobile && l.stage === 'history' && rows.length > 60 ? undefined : {
+                  value: `${l.stage === 'candidate' ? '候选·' : l.stage === 'confirmed' ? '确认·' : ''}${DIV_KIND_CN[l.kind]}`,
                   position: 'middle',
-                  fontSize: l.historical ? 9 : 10,
+                  fontSize: l.stage === 'history' ? 9 : 10,
                   fill: l.color,
-                  fillOpacity: l.historical ? 0.55 : 1,
+                  fillOpacity: l.stage === 'history' ? 0.55 : 1,
                 }}
               />
             ))}

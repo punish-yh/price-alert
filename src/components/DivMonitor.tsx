@@ -146,7 +146,7 @@ function RuleEditor({
         <DialogHeader>
           <DialogTitle>{initial ? '编辑告警组合' : '新建告警组合'}</DialogTitle>
           <DialogDescription>
-            同一方向、同一周期内，所选成员中同时成立的背离种类数达到阈值时触发；解除后可再次告警
+            同一确认时刻、同一方向下，所选成员中确认背离种类数达到阈值时触发；候选背离不参与告警
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -315,28 +315,44 @@ function DivergenceBoard({ overview, interval }: { overview: DivOverviewInterval
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
       {(['top', 'bottom'] as DivDirection[]).map((direction) => {
-        const items = Object.entries(overview.divergences[direction]) as [DivKind, DivDetail][]
+        const confirmedItems = Object.entries(overview.divergences[direction]) as [DivKind, DivDetail][]
+        const candidateItems = Object.entries(overview.candidates[direction]) as [DivKind, DivDetail][]
         const top = direction === 'top'
+        const groups = [
+          { stage: '确认', items: confirmedItems },
+          { stage: '候选', items: candidateItems },
+        ]
         return (
           <div key={direction} className="rounded-lg border border-border/50 px-3 py-2.5">
-            <p className={`mb-1.5 flex items-center gap-1 text-sm font-semibold ${top ? 'text-red-600' : 'text-emerald-600'}`}>
+            <p className={`mb-2 flex flex-wrap items-center gap-1.5 text-sm font-semibold ${top ? 'text-red-600' : 'text-emerald-600'}`}>
               {top ? <TrendingDown className="h-4 w-4" /> : <TrendingUp className="h-4 w-4" />}
-              {top ? '顶背离' : '底背离'}（当前 {items.length} 种）
+              {top ? '顶背离' : '底背离'}
+              <span className="text-xs font-normal text-muted-foreground">确认 {confirmedItems.length} 种 · 候选 {candidateItems.length} 种</span>
             </p>
-            {items.length === 0 ? (
-              <p className="text-xs text-muted-foreground">暂无</p>
-            ) : (
-              <ul className="space-y-1">
-                {items.map(([kind, det]) => (
-                  <li key={kind} className="break-words text-xs leading-relaxed">
-                    <span className={`mr-1.5 inline-block rounded px-1.5 py-0.5 font-medium ${top ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
-                      {DIV_KIND_CN[kind]}
-                    </span>
-                    <span className="font-mono text-muted-foreground">{detailText(kind, det, interval)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <div className="space-y-3">
+              {groups.map(({ stage, items }) => (
+                <div key={stage}>
+                  <p className="mb-1 text-xs font-medium text-zinc-700">{stage}信号（{items.length}）</p>
+                  {items.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">暂无</p>
+                  ) : (
+                    <ul className="space-y-1">
+                      {items.map(([kind, det]) => (
+                        <li key={kind} className="break-words text-xs leading-relaxed">
+                          <span className={`mr-1.5 inline-block rounded px-1.5 py-0.5 font-medium ${top ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
+                            {stage}·{DIV_KIND_CN[kind]}
+                          </span>
+                          <span className="font-mono text-muted-foreground">
+                            {detailText(kind, det, interval)}
+                            {det.confirmed_at ? ` · 确认于 ${fmtT(det.confirmed_at, interval)}` : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )
       })}
@@ -413,7 +429,7 @@ export default function DivMonitor({
           <div className="space-y-1">
             <CardTitle className="text-base">BTCUSDT 背离监控</CardTitle>
             <CardDescription>
-              每 5 分钟检测一次（含正在走的 K 线）；展示最近 365 根 K 线及全部当前、历史背离信号
+              候选每 5 分钟检测（含正在走的 K 线）；确认仅使用已收盘 K 线，右侧满 2 根后成立；仅确认信号触发告警
             </CardDescription>
           </div>
           <Tabs value={interval} onValueChange={(v) => setInterval(v as DivInterval)}>
@@ -443,7 +459,7 @@ export default function DivMonitor({
               <DivergenceBoard overview={current} interval={interval} />
               <div className="rounded-lg border border-border/50 p-2">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
-                  <span>深色线＝当前信号，浅色虚线＝历史信号；文字标注背离种类</span>
+                  <span>实线＝确认背离，点线＝候选背离，浅色虚线＝历史确认；候选可能随行情形成或消失</span>
                   <label className="flex items-center gap-2">
                     <Switch checked={showHistory} onCheckedChange={setShowHistory} />
                     显示历史背离（{current.history?.length ?? 0}）
@@ -463,7 +479,7 @@ export default function DivMonitor({
         <CardHeader className="space-y-1 py-4">
           <CardTitle className="text-base">告警组合规则</CardTitle>
           <CardDescription>
-            可创建多条规则，每条自由组合背离种类、数量阈值、生效周期和方向；网页告警必选，饭碗可单独关闭
+            仅评估确认背离，候选不会告警；每条规则自由组合背离种类、数量阈值、生效周期和方向，饭碗可单独关闭
           </CardDescription>
         </CardHeader>
         <CardContent className="pt-0">

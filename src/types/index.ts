@@ -192,11 +192,15 @@ export interface DivAreaDetail {
   area2: number
 }
 
-export type DivDetail = DivPriceDetail & DivAreaDetail
+export type DivDetail = DivPriceDetail & DivAreaDetail & {
+  /** 确认背离的右侧第 2 根收盘 K 线开盘时间；候选背离没有该字段 */
+  confirmed_at?: number
+}
 
 export type DivHistorySignal = DivDetail & {
   direction: DivDirection
   kind: DivKind
+  confirmed_at: number
 }
 
 export interface DivOverviewInterval {
@@ -210,11 +214,17 @@ export interface DivOverviewInterval {
     hist: (number | null)[]
     volume: number[]
   }
+  /** 旧实时逻辑：每 5 分钟计算，包含正在走的 K 线，仅用于观察和画图 */
+  candidates: {
+    top: Partial<Record<DivKind, DivDetail>>
+    bottom: Partial<Record<DivKind, DivDetail>>
+  }
+  /** 当前已收盘 K 线刚确认的背离，只有这一类可以触发告警 */
   divergences: {
     top: Partial<Record<DivKind, DivDetail>>
     bottom: Partial<Record<DivKind, DivDetail>>
   }
-  /** 最近 365 根展示范围内及预热期识别出的历史信号，前端按可见范围过滤 */
+  /** 最近 365 根展示范围内及预热期识别出的历史确认信号，前端按可见范围过滤 */
   history: DivHistorySignal[]
 }
 
