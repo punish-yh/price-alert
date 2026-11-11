@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, config, corrpoller, database, divpoller, poller, secpoller, tvrelay
+from . import auth, biaspoller, config, corrpoller, database, divpoller, poller, secpoller, tvrelay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 # 日志同时落盘到 data/app.log（单文件 5MB，轮转 3 份），便于排查时直接取文件
@@ -38,11 +38,13 @@ async def lifespan(app: FastAPI):
     sec_task = asyncio.create_task(secpoller.sec_poller_loop())
     corr_task = asyncio.create_task(corrpoller.corr_poller_loop())
     div_task = asyncio.create_task(divpoller.div_poller_loop())
+    bias_task = asyncio.create_task(biaspoller.bias_poller_loop())
     yield
     task.cancel()
     sec_task.cancel()
     corr_task.cancel()
     div_task.cancel()
+    bias_task.cancel()
 
 
 app = FastAPI(title="币安价格监控告警", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -546,6 +548,68 @@ async def corr_alerts_read_all(
     return {"ok": True, "marked": marked, "unread": database.unread_corr_alerts_count()}
 
 
+# ---------------- BTC 乖离率图表与价格告警 ----------------
+
+class BiasConfigUpdate(BaseModel):
+    enabled: bool = False
+    trigger_price: float | None = Field(default=None, gt=0, le=1e12)
+    notify_webhook: bool = False
+
+
+@app.get("/api/bias/overview")
+async def bias_overview(user: str = auth.CurrentUser):
+    return {
+        "intervals": biaspoller.bias_cache,
+        "status": biaspoller.bias_status,
+        "config": biaspoller.get_alert_config(),
+    }
+
+
+@app.post("/api/bias/config")
+async def bias_config_save(
+    body: BiasConfigUpdate,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    if body.enabled and body.trigger_price is None:
+        raise HTTPException(400, "启用乖离率告警前请填写有效的触发价格")
+    config_data = {
+        "enabled": body.enabled,
+        "trigger_price": body.trigger_price,
+        "notify_webhook": body.notify_webhook,
+    }
+    database.set_state(biaspoller.BIAS_CONFIG_KEY, json.dumps(config_data))
+    # 每次保存都以当前最新已收盘 K 线为水位，绝不对 600 根历史信号补发告警。
+    biaspoller.reset_alert_baseline()
+    return {"ok": True, "config": config_data}
+
+
+@app.get("/api/bias/alerts")
+async def bias_alerts(user: str = auth.CurrentUser):
+    return {"items": database.list_bias_alerts(), "unread": database.unread_bias_alerts_count()}
+
+
+@app.post("/api/bias/alerts/{alert_id}/read")
+async def bias_alert_read(
+    alert_id: int,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    if database.get_bias_alert(alert_id) is None:
+        raise HTTPException(404, "告警记录不存在")
+    database.mark_bias_alert_read(alert_id)
+    return {"ok": True, "unread": database.unread_bias_alerts_count()}
+
+
+@app.post("/api/bias/alerts/read-all")
+async def bias_alerts_read_all(
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    marked = database.mark_all_bias_alerts_read()
+    return {"ok": True, "marked": marked, "unread": database.unread_bias_alerts_count()}
+
+
 # ---------------- BTC 背离监控 ----------------
 
 class DivRuleUpdate(BaseModel):
@@ -555,6 +619,7 @@ class DivRuleUpdate(BaseModel):
     min_count: int = Field(ge=2, le=5)
     intervals: list[str]
     direction: str = "both"
+    signal_stage: str = "confirmed"
     notify_webhook: bool = True
     enabled: bool = True
 
@@ -597,6 +662,8 @@ async def div_rule_save(
         raise HTTPException(400, "请至少选择一个有效周期（1h / 4h / 1d）")
     if body.direction not in ("both", "top", "bottom"):
         raise HTTPException(400, "方向仅支持双向、仅顶或仅底")
+    if body.signal_stage not in ("candidate", "confirmed", "both"):
+        raise HTTPException(400, "信号类型仅支持候选、确认或两者")
     if body.min_count > len(kinds):
         raise HTTPException(400, "告警数量阈值不能大于已选背离种类数")
 
@@ -608,6 +675,7 @@ async def div_rule_save(
         "min_count": body.min_count,
         "intervals": intervals,
         "direction": body.direction,
+        "signal_stage": body.signal_stage,
         "notify_webhook": body.notify_webhook,
         "enabled": body.enabled,
     }

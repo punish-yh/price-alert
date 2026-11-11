@@ -52,6 +52,7 @@ function emptyRule(): DivRule {
     min_count: 2,
     intervals: [...INTERVALS],
     direction: 'both',
+    signal_stage: 'confirmed',
     notify_webhook: true,
     enabled: true,
   }
@@ -93,7 +94,11 @@ function RuleEditor({
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    if (open) setDraft(initial ? { ...initial, kinds: [...initial.kinds], intervals: [...initial.intervals] } : emptyRule())
+    if (open) {
+      setDraft(initial
+        ? { ...initial, signal_stage: initial.signal_stage ?? 'confirmed', kinds: [...initial.kinds], intervals: [...initial.intervals] }
+        : emptyRule())
+    }
   }, [open, initial])
 
   function toggleKind(kind: DivKind, checked: boolean) {
@@ -146,7 +151,7 @@ function RuleEditor({
         <DialogHeader>
           <DialogTitle>{initial ? '编辑告警组合' : '新建告警组合'}</DialogTitle>
           <DialogDescription>
-            同一确认时刻、同一方向下，所选成员中确认背离种类数达到阈值时触发；候选背离不参与告警
+            同一方向下，所选成员中同类信号达到数量阈值时触发；候选与确认是否告警由下方信号类型决定
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -171,7 +176,7 @@ function RuleEditor({
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div className="space-y-1.5">
               <Label>数量阈值</Label>
               <Select value={String(draft.min_count)} onValueChange={(v) => setDraft({ ...draft, min_count: Number(v) })}>
@@ -191,6 +196,17 @@ function RuleEditor({
                   <SelectItem value="both">顶 + 底双向</SelectItem>
                   <SelectItem value="top">仅顶背离</SelectItem>
                   <SelectItem value="bottom">仅底背离</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>信号类型</Label>
+              <Select value={draft.signal_stage} onValueChange={(v) => setDraft({ ...draft, signal_stage: v as DivRule['signal_stage'] })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="candidate">仅候选背离</SelectItem>
+                  <SelectItem value="confirmed">仅确认背离</SelectItem>
+                  <SelectItem value="both">候选 + 确认</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -279,6 +295,7 @@ function RulesPanel({ rules, onChanged }: { rules: DivRule[]; onChanged: () => v
                 <span className="font-medium">{rule.name}</span>
                 <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-700">≥ {rule.min_count} 种</Badge>
                 <Badge variant="outline">{DIRECTION_CN[rule.direction]}</Badge>
+                <Badge variant="outline">{rule.signal_stage === 'both' ? '候选 + 确认' : rule.signal_stage === 'candidate' ? '仅候选' : '仅确认'}</Badge>
                 <Badge variant="outline">{rule.intervals.join(' / ')}</Badge>
                 <span className="text-xs text-muted-foreground">{rule.notify_webhook ? '网页 + 饭碗' : '仅网页'}</span>
                 <span className="flex w-full flex-wrap items-center gap-1 sm:ml-auto sm:w-auto">
@@ -429,7 +446,7 @@ export default function DivMonitor({
           <div className="space-y-1">
             <CardTitle className="text-base">BTCUSDT 背离监控</CardTitle>
             <CardDescription>
-              候选每 5 分钟检测（含正在走的 K 线）；确认仅使用已收盘 K 线，右侧满 2 根后成立；仅确认信号触发告警
+              候选每 5 分钟检测（含正在走的 K 线）；确认仅使用已收盘 K 线，右侧满 2 根后成立；告警信号类型由每条规则选择
             </CardDescription>
           </div>
           <Tabs value={interval} onValueChange={(v) => setInterval(v as DivInterval)}>
@@ -479,7 +496,7 @@ export default function DivMonitor({
         <CardHeader className="space-y-1 py-4">
           <CardTitle className="text-base">告警组合规则</CardTitle>
           <CardDescription>
-            仅评估确认背离，候选不会告警；每条规则自由组合背离种类、数量阈值、生效周期和方向，饭碗可单独关闭
+            每条规则自由组合背离种类、数量阈值、生效周期、方向及候选／确认信号类型，饭碗可单独关闭
           </CardDescription>
         </CardHeader>
         <CardContent className="pt-0">
@@ -513,7 +530,7 @@ export default function DivMonitor({
                 <div key={a.id} className={`rounded-lg border px-3 py-2.5 text-sm ${unreadRow ? 'border-amber-300 bg-amber-50/60' : 'border-border/50 text-zinc-500'}`}>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                     <Badge variant="outline" className={top ? 'border-red-300 bg-red-50 text-red-600' : 'border-emerald-300 bg-emerald-50 text-emerald-700'}>
-                      {top ? '顶背离' : '底背离'}
+                      {a.signal_stage === 'candidate' ? '候选' : '确认'}{top ? '顶背离' : '底背离'}
                     </Badge>
                     <span className="font-mono font-semibold">{a.symbol}</span>
                     <Badge variant="outline" className="text-muted-foreground">{a.interval}</Badge>

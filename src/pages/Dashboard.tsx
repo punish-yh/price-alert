@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Bell, CandlestickChart, FileSearch, GitCompareArrows, LineChart, Loader2, LogOut, Radio, TrendingUp } from 'lucide-react'
+import { Activity, Bell, CandlestickChart, FileSearch, GitCompareArrows, LineChart, Loader2, LogOut, Percent, Radio, TrendingUp } from 'lucide-react'
 import { api, fmtTime } from '@/lib/api'
-import type { CorrAlert, DivAlert, Monitor, MonitorStatus, PricesResponse, SecHit, SecStatus } from '@/types'
+import type { BiasAlert, CorrAlert, DivAlert, Monitor, MonitorStatus, PricesResponse, SecHit, SecStatus } from '@/types'
+import BiasMonitor from '@/components/BiasMonitor'
 import CreateMonitorDialog from '@/components/CreateMonitorDialog'
 import CorrMonitor from '@/components/CorrMonitor'
 import DivMonitor from '@/components/DivMonitor'
@@ -18,7 +19,7 @@ const TABS: { value: MonitorStatus; label: string }[] = [
   { value: 'deleted', label: '已删除' },
 ]
 
-type View = 'monitors' | 'ema' | 'tv' | 'sec' | 'corr' | 'div'
+type View = 'monitors' | 'ema' | 'tv' | 'sec' | 'corr' | 'div' | 'bias'
 
 export default function Dashboard({ username, onLogout }: { username: string; onLogout: () => void }) {
   const [monitors, setMonitors] = useState<Monitor[]>([])
@@ -30,6 +31,8 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   const [unreadCorr, setUnreadCorr] = useState(0)
   const [divAlerts, setDivAlerts] = useState<DivAlert[]>([])
   const [unreadDiv, setUnreadDiv] = useState(0)
+  const [biasAlerts, setBiasAlerts] = useState<BiasAlert[]>([])
+  const [unreadBias, setUnreadBias] = useState(0)
   const [unreadTriggered, setUnreadTriggered] = useState(0)
   const [tab, setTab] = useState<MonitorStatus>('active')
   const [view, setView] = useState<View>('monitors')
@@ -39,6 +42,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   const lastSecHitId = useRef<number | null>(null)
   const lastCorrAlertId = useRef<number | null>(null)
   const lastDivAlertId = useRef<number | null>(null)
+  const lastBiasAlertId = useRef<number | null>(null)
 
   /** SEC 新财报弹窗（SSE 与轮询共用，按命中 id 去重） */
   const notifySecHit = useCallback((h: SecHit) => {
@@ -82,8 +86,21 @@ export default function Dashboard({ username, onLogout }: { username: string; on
       macd: 'MACD(DIF)',
       macd_area: 'MACD面积',
     }
-    toast.warning(`${a.symbol} ${a.interval} 确认${a.direction === 'top' ? '顶背离' : '底背离'}组合`, {
-      description: `${a.kinds.map((k) => kindCN[k] ?? k).join('、')}（${a.kinds.length} 种 ≥ 阈值 ${a.min_count}，右侧 2 根已收盘）`,
+    const candidate = a.signal_stage === 'candidate'
+    toast.warning(`${a.symbol} ${a.interval} ${candidate ? '候选' : '确认'}${a.direction === 'top' ? '顶背离' : '底背离'}组合`, {
+      description: `${a.kinds.map((k) => kindCN[k] ?? k).join('、')}（${a.kinds.length} 种 ≥ 阈值 ${a.min_count}，${candidate ? '实时候选，可能消失' : '右侧 2 根已收盘'}）`,
+      duration: 15000,
+    })
+  }, [])
+
+  /** 乖离率价格告警弹窗（SSE 与轮询共用，按告警 id 去重） */
+  const notifyBiasAlert = useCallback((a: BiasAlert) => {
+    if (lastBiasAlertId.current !== null && a.id <= lastBiasAlertId.current) return
+    lastBiasAlertId.current = Math.max(lastBiasAlertId.current ?? 0, a.id)
+    const strength = a.strength === 'extreme' ? '强' : '放量'
+    const direction = a.direction === 'negative' ? '负乖离' : '正乖离'
+    toast.warning(`${a.symbol} ${a.interval} ${strength}${direction}触及触发价`, {
+      description: `最低价 ${a.low} ≤ 触发价 ${a.trigger_price}，BIAS20 ${a.bias.toFixed(3)}%，量比 ${a.volume_ratio.toFixed(2)}×，RSI14 ${a.rsi.toFixed(1)}`,
       duration: 15000,
     })
   }, [])
@@ -91,12 +108,13 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   // 后端 SSE 实时推送：财报命中即刻弹窗（无轮询延迟）；断线时由下方轮询兜底
   const refresh = useCallback(async (silent = false) => {
     try {
-      const [m, p, s, c, d] = await Promise.all([
+      const [m, p, s, c, d, b] = await Promise.all([
         api.monitors(),
         api.prices(),
         api.secHits(),
         api.corrAlerts(),
         api.divAlerts(),
+        api.biasAlerts(),
       ])
       setMonitors(m.items)
       setUnreadTriggered(m.unread_triggered)
@@ -108,6 +126,8 @@ export default function Dashboard({ username, onLogout }: { username: string; on
       setUnreadCorr(c.unread)
       setDivAlerts(d.items)
       setUnreadDiv(d.unread)
+      setBiasAlerts(b.items)
+      setUnreadBias(b.unread)
       // 轮询兜底：SSE 漏掉/断线期间的命中在这里补弹（notifySecHit 内部按 id 去重）
       const fresh = s.items.filter((h) => !h.baseline)
       const maxId = fresh.length ? Math.max(...fresh.map((h) => h.id)) : 0
@@ -136,12 +156,21 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           notifyDivAlert(a)
         }
       }
+      // 乖离率价格告警轮询兜底
+      const maxBiasId = b.items.length ? Math.max(...b.items.map((a) => a.id)) : 0
+      if (lastBiasAlertId.current === null) {
+        lastBiasAlertId.current = maxBiasId
+      } else {
+        for (const a of b.items.filter((x) => x.id > lastBiasAlertId.current!).reverse()) {
+          notifyBiasAlert(a)
+        }
+      }
     } catch (err) {
       if (!silent) toast.error(err instanceof Error ? err.message : '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [notifySecHit, notifyCorrAlert, notifyDivAlert])
+  }, [notifySecHit, notifyCorrAlert, notifyDivAlert, notifyBiasAlert])
 
   // 后端 SSE 实时推送：财报命中即刻弹窗（无轮询延迟）；断线时由轮询兜底
   useEffect(() => {
@@ -161,12 +190,16 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           notifyDivAlert(data.alert as DivAlert)
           refresh(true)
         }
+        if (data?.type === 'bias_alert' && data.alert) {
+          notifyBiasAlert(data.alert as BiasAlert)
+          refresh(true)
+        }
       } catch {
         /* 非 JSON 消息忽略 */
       }
     }
     return () => es.close()
-  }, [notifySecHit, notifyCorrAlert, notifyDivAlert, refresh])
+  }, [notifySecHit, notifyCorrAlert, notifyDivAlert, notifyBiasAlert, refresh])
 
   useEffect(() => {
     refresh()
@@ -308,6 +341,11 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           {unreadDiv}
         </span>
       )}
+      {v === 'bias' && unreadBias > 0 && (
+        <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-xs tabular-nums text-amber-700">
+          {unreadBias}
+        </span>
+      )}
     </button>
   )
 
@@ -330,6 +368,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           {navItem('ema', <LineChart className="h-4 w-4" />, 'EMA 均线监控')}
           {navItem('corr', <GitCompareArrows className="h-4 w-4" />, '相关度计算')}
           {navItem('div', <CandlestickChart className="h-4 w-4" />, 'BTC 背离监控')}
+          {navItem('bias', <Percent className="h-4 w-4" />, 'BTC 乖离率')}
           {navItem('sec', <FileSearch className="h-4 w-4" />, 'SEC 财报监听')}
           {navItem('tv', <Radio className="h-4 w-4" />, 'TradingView 转发')}
         </nav>
@@ -387,6 +426,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
             ['ema', 'EMA 均线'],
             ['corr', '相关度'],
             ['div', 'BTC 背离'],
+            ['bias', 'BTC 乖离率'],
             ['sec', 'SEC 财报'],
             ['tv', 'TV 转发'],
           ] as const).map(([v, label]) => (
@@ -399,6 +439,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
             >
               {label}
               {v === 'div' && unreadDiv > 0 && <span className="ml-1 text-amber-600">{unreadDiv}</span>}
+              {v === 'bias' && unreadBias > 0 && <span className="ml-1 text-amber-600">{unreadBias}</span>}
               {v === 'corr' && unreadCorr > 0 && <span className="ml-1 text-amber-600">{unreadCorr}</span>}
               {v === 'sec' && unreadSec > 0 && <span className="ml-1 text-violet-600">{unreadSec}</span>}
             </button>
@@ -427,6 +468,11 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           <div className="mx-auto max-w-5xl">
             <h2 className="mb-4 text-lg font-bold">BTC 背离监控</h2>
             <DivMonitor alerts={divAlerts} unread={unreadDiv} onChanged={() => refresh(true)} />
+          </div>
+        ) : view === 'bias' ? (
+          <div className="mx-auto max-w-7xl">
+            <h2 className="mb-4 text-lg font-bold">BTC 乖离率</h2>
+            <BiasMonitor alerts={biasAlerts} unread={unreadBias} onChanged={() => refresh(true)} />
           </div>
         ) : view === 'ema' ? (
           <div className="mx-auto max-w-4xl">

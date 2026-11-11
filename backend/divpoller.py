@@ -1,14 +1,14 @@
-"""BTC 候选/确认背离监控 + 用户自定义确认信号组合告警
+"""BTC 候选/确认背离监控 + 用户自定义信号组合告警
 
 - 标的固定 BTCUSDT（合约优先），周期 1h / 4h / 1d，每 POLL_INTERVAL 秒（默认 5 分钟）检测。
 - 候选背离：完整保留旧实时逻辑，左右各 3 根摆动点，比较已确认摆动点与其后即时极值；
-  包含正在走的 K 线，可能随行情形成或消失，只展示、不告警。
+  包含正在走的 K 线，可能随行情形成或消失。
 - 确认背离：与参考网站公开算法一致，只使用已收盘 K 线；价格拐点左 5、右 2，
   指标取拐点前后各 2 根极值，两拐点间隔 5~60 根，右侧第 2 根收盘时确认。
 - 确认量价：比较两段走势的累计成交量；确认 MACD 面积：从拐点附近同号柱定位连续区域，
   面积只累计到确认时刻。RSI(14) Wilder、OBV、MACD(12,26,9) DIF 与参考口径一致。
 - 最近 365 根 K 线、候选信号、当前确认信号及历史确认信号均供前端画图，是否告警不影响展示。
-- 只有确认背离进入组合规则；按规则、周期、方向和确认时间戳去重，连续不同的新信号不会被旧状态挡住。
+- 每条规则独立选择候选、确认或两者参与组合告警；候选解除后重新武装，确认按时间戳去重。
 - 通知：网页（SSE + 告警记录）必选，饭碗 webhook 每条规则可选。
 """
 import asyncio
@@ -410,7 +410,7 @@ def _confirmed_signal(candles: list[dict], kind: str, direction: str, prev: dict
 def detect_confirmed(candles: list[dict], ind: dict, end: int | None = None) -> tuple[dict, list[dict]]:
     """参考网站口径的确认背离；默认排除最后一根正在走的 K 线。
 
-    返回（当前收盘刚确认的信号, 全部历史确认信号）。候选背离不参与告警。
+    返回（当前收盘刚确认的信号, 全部历史确认信号）。是否进入告警由规则决定。
     """
     last = len(candles) - 2 if end is None else min(end, len(candles) - 1)
     current = {"top": {}, "bottom": {}}
@@ -454,11 +454,13 @@ async def _send_div_webhook(client: httpx.AsyncClient, alert: dict) -> tuple[boo
     cn_tz = timezone(timedelta(hours=8))
     time_str = datetime.now(cn_tz).strftime("%Y-%m-%d %H:%M:%S")
     direction_cn = "顶背离" if alert["direction"] == "top" else "底背离"
+    stage_cn = "候选" if alert.get("signal_stage") == "candidate" else "确认"
+    stage_note = "实时候选，可能消失" if stage_cn == "候选" else "右侧 2 根已收盘"
     kinds_cn = "、".join(KIND_CN[k] for k in alert["kinds"])
     text = (
-        f"【确认背离告警】{alert['symbol']} {alert['interval']} {direction_cn}组合"
+        f"【{stage_cn}背离告警】{alert['symbol']} {alert['interval']} {direction_cn}组合"
         f"「{alert['rule_name']}」（{len(alert['kinds'])} 种 ≥ 阈值 {alert['min_count']}）："
-        f"{kinds_cn}（右侧 2 根已收盘；检测时间 {time_str}）"
+        f"{kinds_cn}（{stage_note}；检测时间 {time_str}）"
     )
     payload = {
         "message": text,
@@ -469,6 +471,7 @@ async def _send_div_webhook(client: httpx.AsyncClient, alert: dict) -> tuple[boo
         "interval": alert["interval"],
         "type": "divergence",
         "direction": alert["direction"],
+        "signal_stage": alert.get("signal_stage", "confirmed"),
         "rule_name": alert["rule_name"],
         "kinds": ",".join(alert["kinds"]),
         "kinds_cn": kinds_cn,
@@ -520,8 +523,10 @@ def _schedule_div_webhook(client: httpx.AsyncClient, alert_id: int, alert: dict)
     task.add_done_callback(_webhook_tasks.discard)
 
 
-async def _eval_alerts(client: httpx.AsyncClient, interval: str, rules: list[dict], divs: dict) -> None:
-    """仅评估右侧两根收盘后的确认背离；按确认时间戳去重，候选背离不进入这里。"""
+async def _eval_alerts(
+    client: httpx.AsyncClient, interval: str, rules: list[dict], candidates: dict, confirmed: dict
+) -> None:
+    """按用户选择分别评估候选/确认信号；候选解除后重武装，确认按时间戳去重。"""
     try:
         state = json.loads(database.get_state(DIV_STATE_KEY) or "{}")
     except ValueError:
@@ -530,28 +535,42 @@ async def _eval_alerts(client: httpx.AsyncClient, interval: str, rules: list[dic
     for rule in rules:
         if not rule.get("enabled", True) or interval not in rule["intervals"]:
             continue
-        for direction in ("top", "bottom"):
-            if rule["direction"] != "both" and rule["direction"] != direction:
-                continue
-            matched = [k for k in KINDS if k in rule["kinds"] and k in divs[direction]]
-            key = f"{rule['id']}|{interval}|{direction}"
-            signature = "|".join(f"{k}:{divs[direction][k].get('confirmed_at', '')}" for k in matched)
-            active = len(matched) >= rule["min_count"] and state.get(key) == signature
-            if len(matched) >= rule["min_count"] and not active:
-                details = {k: divs[direction][k] for k in matched}
-                alert_id = database.add_div_alert(
-                    SYMBOL, interval, direction, matched, details, rule["min_count"], rule["name"]
+        selected = rule.get("signal_stage", "confirmed")
+        stages = ("candidate", "confirmed") if selected == "both" else (selected,)
+        for stage in stages:
+            divs = candidates if stage == "candidate" else confirmed
+            for direction in ("top", "bottom"):
+                if rule["direction"] != "both" and rule["direction"] != direction:
+                    continue
+                matched = [k for k in KINDS if k in rule["kinds"] and k in divs[direction]]
+                # 确认沿用旧键，避免升级后同一确认信号重复告警；候选使用独立状态。
+                key = (
+                    f"{rule['id']}|{interval}|{direction}"
+                    if stage == "confirmed"
+                    else f"{rule['id']}|{interval}|candidate|{direction}"
                 )
-                log.info("确认背离告警 %s %s %s 规则「%s」：%s", SYMBOL, interval, direction, rule["name"], matched)
-                alert = database.get_div_alert(alert_id)
-                secpoller.publish({"type": "div_alert", "alert": alert})
-                if rule.get("notify_webhook", True):
-                    _schedule_div_webhook(client, alert_id, alert)
-                state[key] = signature
-                changed = True
-            elif len(matched) < rule["min_count"] and state.get(key) not in (None, ""):
-                state[key] = ""  # 当前确认时刻结束，等待下一次新的确认信号
-                changed = True
+                signature = (
+                    "|".join(f"{k}:{divs[direction][k].get('confirmed_at', '')}" for k in matched)
+                    if stage == "confirmed"
+                    else "candidate"
+                )
+                active = len(matched) >= rule["min_count"] and state.get(key) == signature
+                if len(matched) >= rule["min_count"] and not active:
+                    details = {k: divs[direction][k] for k in matched}
+                    alert_id = database.add_div_alert(
+                        SYMBOL, interval, direction, matched, details, rule["min_count"], rule["name"], stage
+                    )
+                    stage_cn = "候选" if stage == "candidate" else "确认"
+                    log.info("%s背离告警 %s %s %s 规则「%s」：%s", stage_cn, SYMBOL, interval, direction, rule["name"], matched)
+                    alert = database.get_div_alert(alert_id)
+                    secpoller.publish({"type": "div_alert", "alert": alert})
+                    if rule.get("notify_webhook", True):
+                        _schedule_div_webhook(client, alert_id, alert)
+                    state[key] = signature
+                    changed = True
+                elif len(matched) < rule["min_count"] and state.get(key) not in (None, ""):
+                    state[key] = ""
+                    changed = True
     if changed:
         database.set_state(DIV_STATE_KEY, json.dumps(state))
 
@@ -593,7 +612,7 @@ async def div_poller_loop() -> None:
                         "divergences": confirmed,
                         "history": history,
                     }
-                    await _eval_alerts(client, interval, rules, confirmed)
+                    await _eval_alerts(client, interval, rules, candidates, confirmed)
                 div_status.update(
                     ok=True,
                     error="",

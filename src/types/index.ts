@@ -214,12 +214,12 @@ export interface DivOverviewInterval {
     hist: (number | null)[]
     volume: number[]
   }
-  /** 旧实时逻辑：每 5 分钟计算，包含正在走的 K 线，仅用于观察和画图 */
+  /** 旧实时逻辑：每 5 分钟计算，包含正在走的 K 线；是否告警由规则选择 */
   candidates: {
     top: Partial<Record<DivKind, DivDetail>>
     bottom: Partial<Record<DivKind, DivDetail>>
   }
-  /** 当前已收盘 K 线刚确认的背离，只有这一类可以触发告警 */
+  /** 当前已收盘 K 线刚确认的背离；是否告警由规则选择 */
   divergences: {
     top: Partial<Record<DivKind, DivDetail>>
     bottom: Partial<Record<DivKind, DivDetail>>
@@ -228,6 +228,8 @@ export interface DivOverviewInterval {
   history: DivHistorySignal[]
 }
 
+export type DivSignalStage = 'candidate' | 'confirmed'
+
 export interface DivRule {
   id: number
   name: string
@@ -235,6 +237,7 @@ export interface DivRule {
   min_count: number
   intervals: DivInterval[]
   direction: 'both' | DivDirection
+  signal_stage: DivSignalStage | 'both'
   notify_webhook: boolean
   enabled: boolean
 }
@@ -244,10 +247,72 @@ export interface DivAlert {
   symbol: string
   interval: DivInterval
   direction: DivDirection
+  signal_stage: DivSignalStage
   kinds: DivKind[]
   details: Record<string, DivDetail>
   min_count: number
   rule_name: string
+  webhook_ok: number | null
+  webhook_error: string
+  read_at: string | null
+  created_at: string
+}
+
+// ---------------- BTC 乖离率图表 ----------------
+
+export type BiasInterval = '15m' | '1h' | '4h'
+
+export interface BiasSignal {
+  open_time: number
+  direction: 'negative' | 'positive'
+  strength: 'extreme' | 'watch'
+  bias: number
+  volume_ratio: number
+  rsi: number
+  ma20: number
+  threshold: number
+  price: number
+  high: number
+  low: number
+}
+
+export interface BiasOverviewInterval {
+  updated_at: string
+  candles: DivCandle[]
+  indicators: {
+    ma20: (number | null)[]
+    bias: (number | null)[]
+    volume_ma20: (number | null)[]
+    volume_ratio: (number | null)[]
+    rsi: (number | null)[]
+  }
+  signals: BiasSignal[]
+  settings: {
+    bias_period: number
+    volume_period: number
+    volume_spike: number
+    extreme_bias: number
+  }
+}
+
+export interface BiasAlertConfig {
+  enabled: boolean
+  trigger_price: number | null
+  notify_webhook: boolean
+}
+
+export interface BiasAlert {
+  id: number
+  symbol: string
+  interval: BiasInterval
+  open_time: number
+  direction: 'negative' | 'positive'
+  strength: 'extreme' | 'watch'
+  bias: number
+  volume_ratio: number
+  rsi: number
+  low: number
+  trigger_price: number
   webhook_ok: number | null
   webhook_error: string
   read_at: string | null

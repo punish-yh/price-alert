@@ -1,4 +1,8 @@
 import type {
+  BiasAlert,
+  BiasAlertConfig,
+  BiasInterval,
+  BiasOverviewInterval,
   CorrAlert,
   CorrHistoryPoint,
   CorrMonitor,
@@ -160,6 +164,24 @@ export const api = {
     request<{ ok: boolean; unread: number }>(`/api/corr/alerts/${id}/read`, { method: 'POST' }),
   markAllCorrAlertsRead: () =>
     request<{ ok: boolean; marked: number; unread: number }>('/api/corr/alerts/read-all', {
+      method: 'POST',
+    }),
+  biasOverview: () =>
+    request<{
+      intervals: Partial<Record<BiasInterval, BiasOverviewInterval>>
+      status: { ok: boolean | null; error: string; last_poll: string | null }
+      config: BiasAlertConfig
+    }>('/api/bias/overview'),
+  saveBiasConfig: (body: BiasAlertConfig) =>
+    request<{ ok: boolean; config: BiasAlertConfig }>('/api/bias/config', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  biasAlerts: () => request<{ items: BiasAlert[]; unread: number }>('/api/bias/alerts'),
+  markBiasAlertRead: (id: number) =>
+    request<{ ok: boolean; unread: number }>(`/api/bias/alerts/${id}/read`, { method: 'POST' }),
+  markAllBiasAlertsRead: () =>
+    request<{ ok: boolean; marked: number; unread: number }>('/api/bias/alerts/read-all', {
       method: 'POST',
     }),
   divOverview: () =>

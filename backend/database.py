@@ -205,6 +205,7 @@ def init_db() -> None:
                 symbol        TEXT    NOT NULL,
                 interval      TEXT    NOT NULL,
                 direction     TEXT    NOT NULL CHECK (direction IN ('top','bottom')),
+                signal_stage  TEXT    NOT NULL DEFAULT 'confirmed' CHECK (signal_stage IN ('candidate','confirmed')),
                 kinds         TEXT    NOT NULL,
                 details       TEXT    NOT NULL DEFAULT '{}',
                 min_count     INTEGER NOT NULL,
@@ -223,6 +224,37 @@ def init_db() -> None:
         cols_div = {r["name"] for r in _conn.execute("PRAGMA table_info(div_alerts)")}
         if "rule_name" not in cols_div:
             _conn.execute("ALTER TABLE div_alerts ADD COLUMN rule_name TEXT NOT NULL DEFAULT ''")
+        if "signal_stage" not in cols_div:
+            _conn.execute(
+                "ALTER TABLE div_alerts ADD COLUMN signal_stage TEXT NOT NULL DEFAULT 'confirmed'"
+            )
+
+        # ---------------- BTC 乖离率价格告警 ----------------
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bias_alerts (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol        TEXT    NOT NULL,
+                interval      TEXT    NOT NULL,
+                open_time     INTEGER NOT NULL,
+                direction     TEXT    NOT NULL CHECK (direction IN ('negative','positive')),
+                strength      TEXT    NOT NULL CHECK (strength IN ('extreme','watch')),
+                bias          REAL    NOT NULL,
+                volume_ratio  REAL    NOT NULL,
+                rsi           REAL    NOT NULL,
+                low           REAL    NOT NULL,
+                trigger_price REAL    NOT NULL,
+                webhook_ok    INTEGER,
+                webhook_error TEXT    NOT NULL DEFAULT '',
+                read_at       TEXT,
+                created_at    TEXT    NOT NULL,
+                UNIQUE(interval, open_time)
+            )
+            """
+        )
+        _conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bias_alerts_time ON bias_alerts(created_at)"
+        )
 
 
 def _now() -> str:
@@ -865,16 +897,18 @@ def add_div_alert(
     details: dict,
     min_count: int,
     rule_name: str = "",
+    signal_stage: str = "confirmed",
 ) -> int:
     with _lock, _conn:
         cur = _conn.execute(
             """INSERT INTO div_alerts
-               (symbol, interval, direction, kinds, details, min_count, rule_name, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
+               (symbol, interval, direction, signal_stage, kinds, details, min_count, rule_name, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
             (
                 symbol,
                 interval,
                 direction,
+                signal_stage,
                 json.dumps(kinds),
                 json.dumps(details),
                 min_count,
@@ -928,4 +962,73 @@ def mark_div_alert_read(alert_id: int) -> None:
 def mark_all_div_alerts_read() -> int:
     with _lock, _conn:
         cur = _conn.execute("UPDATE div_alerts SET read_at=? WHERE read_at IS NULL", (_now(),))
+    return cur.rowcount
+
+
+# ---------------- BTC 乖离率价格告警 ----------------
+
+def add_bias_alert(symbol: str, interval: str, signal: dict, trigger_price: float) -> int | None:
+    """同一周期的同一根 K 线只告警一次，即使服务重启也不会重复。"""
+    try:
+        with _lock, _conn:
+            cur = _conn.execute(
+                """INSERT INTO bias_alerts
+                   (symbol, interval, open_time, direction, strength, bias, volume_ratio,
+                    rsi, low, trigger_price, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    symbol,
+                    interval,
+                    signal["open_time"],
+                    signal["direction"],
+                    signal["strength"],
+                    signal["bias"],
+                    signal["volume_ratio"],
+                    signal["rsi"],
+                    signal["low"],
+                    trigger_price,
+                    _now(),
+                ),
+            )
+            return int(cur.lastrowid)  # type: ignore[arg-type]
+    except sqlite3.IntegrityError:
+        return None
+
+
+def get_bias_alert(alert_id: int) -> Optional[dict[str, Any]]:
+    with _lock:
+        row = _conn.execute("SELECT * FROM bias_alerts WHERE id=?", (alert_id,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def set_bias_alert_webhook(alert_id: int, ok: bool, err: str) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "UPDATE bias_alerts SET webhook_ok=?, webhook_error=? WHERE id=?",
+            (1 if ok else 0, err, alert_id),
+        )
+
+
+def list_bias_alerts(limit: int = 100) -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute("SELECT * FROM bias_alerts ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def unread_bias_alerts_count() -> int:
+    with _lock:
+        row = _conn.execute("SELECT COUNT(*) AS n FROM bias_alerts WHERE read_at IS NULL").fetchone()
+    return int(row["n"]) if row else 0
+
+
+def mark_bias_alert_read(alert_id: int) -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "UPDATE bias_alerts SET read_at=? WHERE id=? AND read_at IS NULL", (_now(), alert_id)
+        )
+
+
+def mark_all_bias_alerts_read() -> int:
+    with _lock, _conn:
+        cur = _conn.execute("UPDATE bias_alerts SET read_at=? WHERE read_at IS NULL", (_now(),))
     return cur.rowcount
