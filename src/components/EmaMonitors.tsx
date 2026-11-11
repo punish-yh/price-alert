@@ -296,7 +296,7 @@ export default function EmaMonitors({ monitors, prices, onDelete, onRestore, onC
       ) : (
         groups.map(([symbol, items]) => (
           <Card key={symbol} className="border-border/60">
-            <CardHeader className="flex-row items-center justify-between space-y-0 py-4">
+            <CardHeader className="flex flex-col items-start gap-2 space-y-0 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-baseline gap-3">
                 <span className="text-lg font-bold tracking-wide">{symbol}</span>
                 <span className="font-mono text-sm tabular-nums text-zinc-700">

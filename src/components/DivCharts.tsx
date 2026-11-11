@@ -129,11 +129,20 @@ export default function DivCharts({
 }) {
   const total = overview.candles.length
   const [visibleCount, setVisibleCount] = useState(total)
+  const [isMobile, setIsMobile] = useState(false)
   const zoomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setVisibleCount(total)
   }, [interval, total])
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 639px)')
+    const update = () => setIsMobile(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
 
   useEffect(() => {
     const node = zoomRef.current
@@ -195,13 +204,34 @@ export default function DivCharts({
 
   return (
     <div ref={zoomRef} className="space-y-1" style={{ overscrollBehavior: 'contain' }}>
-      <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
-        <span>当前显示最近 {rows.length} / {total} 根 · 滚轮向上放大，向下缩小</span>
-        {rows.length < total && (
-          <button type="button" className="text-sky-600 hover:underline" onClick={() => setVisibleCount(total)}>
-            重置为 {total} 根
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
+        <span>
+          当前显示最近 {rows.length} / {total} 根
+          <span className="hidden sm:inline"> · 滚轮向上放大，向下缩小</span>
+        </span>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            className="text-sky-600 disabled:opacity-40 sm:hidden"
+            disabled={rows.length <= 20}
+            onClick={() => setVisibleCount((n) => Math.max(20, Math.round(n * 0.8)))}
+          >
+            放大
           </button>
-        )}
+          <button
+            type="button"
+            className="text-sky-600 disabled:opacity-40 sm:hidden"
+            disabled={rows.length >= total}
+            onClick={() => setVisibleCount((n) => Math.min(total, Math.round(n * 1.25)))}
+          >
+            缩小
+          </button>
+          {rows.length < total && (
+            <button type="button" className="text-sky-600 hover:underline" onClick={() => setVisibleCount(total)}>
+              重置为 {total} 根
+            </button>
+          )}
+        </div>
       </div>
       {/* K 线主图 + 背离连线 */}
       <div className="h-64">
@@ -216,7 +246,7 @@ export default function DivCharts({
               tickFormatter={(v) => fmtNum(v)}
               axisLine={false}
               tickLine={false}
-              width={64}
+              width={isMobile ? 48 : 64}
             />
             <Tooltip content={<PriceTooltip />} />
             <Bar dataKey={(r: { low: number; high: number }) => [r.low, r.high]} shape={<Candle />} isAnimationActive={false} />
@@ -231,7 +261,7 @@ export default function DivCharts({
                 strokeOpacity={l.historical ? 0.35 : 0.95}
                 strokeWidth={l.historical ? 1 : 1.8}
                 strokeDasharray={l.historical ? '3 3' : l.kind === 'macd_area' ? '6 3' : undefined}
-                label={{
+                label={isMobile && l.historical && rows.length > 60 ? undefined : {
                   value: DIV_KIND_CN[l.kind],
                   position: 'middle',
                   fontSize: l.historical ? 9 : 10,
@@ -277,7 +307,7 @@ export default function DivCharts({
                 tick={{ fontSize: 10, fill: '#a1a1aa' }}
                 axisLine={false}
                 tickLine={false}
-                width={64}
+                width={isMobile ? 48 : 64}
                 tickCount={3}
               />
               <Tooltip
@@ -307,7 +337,7 @@ export default function DivCharts({
                 tickFormatter={(v) => fmtNum(v)}
                 axisLine={false}
                 tickLine={false}
-                width={64}
+                width={isMobile ? 48 : 64}
               />
               <Tooltip
                 labelFormatter={(ms) => fmtFull(Number(ms))}
@@ -334,7 +364,7 @@ export default function DivCharts({
                 tickFormatter={(v) => fmtNum(v)}
                 axisLine={false}
                 tickLine={false}
-                width={64}
+                width={isMobile ? 48 : 64}
               />
               <Tooltip
                 labelFormatter={(ms) => fmtFull(Number(ms))}

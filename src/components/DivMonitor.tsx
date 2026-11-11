@@ -281,7 +281,7 @@ function RulesPanel({ rules, onChanged }: { rules: DivRule[]; onChanged: () => v
                 <Badge variant="outline">{DIRECTION_CN[rule.direction]}</Badge>
                 <Badge variant="outline">{rule.intervals.join(' / ')}</Badge>
                 <span className="text-xs text-muted-foreground">{rule.notify_webhook ? '网页 + 饭碗' : '仅网页'}</span>
-                <span className="ml-auto flex items-center gap-1">
+                <span className="flex w-full flex-wrap items-center gap-1 sm:ml-auto sm:w-auto">
                   {busyId === rule.id && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
                   <Switch checked={rule.enabled} onCheckedChange={(v) => toggleRule(rule, v)} disabled={busyId !== null} />
                   <Button variant="ghost" size="sm" className="h-8 px-2" onClick={() => { setEditing(rule); setEditorOpen(true) }}>
@@ -328,7 +328,7 @@ function DivergenceBoard({ overview, interval }: { overview: DivOverviewInterval
             ) : (
               <ul className="space-y-1">
                 {items.map(([kind, det]) => (
-                  <li key={kind} className="text-xs">
+                  <li key={kind} className="break-words text-xs leading-relaxed">
                     <span className={`mr-1.5 inline-block rounded px-1.5 py-0.5 font-medium ${top ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
                       {DIV_KIND_CN[kind]}
                     </span>
@@ -409,7 +409,7 @@ export default function DivMonitor({
   return (
     <div className="space-y-4">
       <Card className="border-border/60">
-        <CardHeader className="flex-row items-center justify-between space-y-0 py-4">
+        <CardHeader className="flex flex-col items-start gap-3 space-y-0 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
             <CardTitle className="text-base">BTCUSDT 背离监控</CardTitle>
             <CardDescription>
@@ -472,7 +472,7 @@ export default function DivMonitor({
       </Card>
 
       <Card className="border-border/60">
-        <CardHeader className="flex-row items-center justify-between space-y-0 py-4">
+        <CardHeader className="flex flex-col items-start gap-3 space-y-0 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             <BellRing className="h-4 w-4 text-amber-500" />
             <CardTitle className="text-base">背离告警记录</CardTitle>
@@ -519,7 +519,7 @@ export default function DivMonitor({
                     {a.kinds.map((kind) => {
                       const det = a.details[kind]
                       return det ? (
-                        <p key={kind} className="font-mono text-[11px] text-muted-foreground">
+                        <p key={kind} className="break-words font-mono text-[11px] leading-relaxed text-muted-foreground">
                           {DIV_KIND_CN[kind]}：{detailText(kind, det, a.interval)}
                         </p>
                       ) : null

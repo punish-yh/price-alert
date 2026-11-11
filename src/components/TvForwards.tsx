@@ -118,7 +118,7 @@ export default function TvForwards() {
       </Card>
 
       <Card className="border-border/60">
-        <CardHeader className="flex-row items-center justify-between space-y-0 py-4">
+        <CardHeader className="flex flex-col items-start gap-3 space-y-0 py-4 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="text-base">转发记录</CardTitle>
           <Badge variant="outline" className="text-muted-foreground">
             {items.length} 条

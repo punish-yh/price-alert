@@ -312,9 +312,9 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   )
 
   return (
-    <div className="flex min-h-screen bg-zinc-50 text-zinc-900">
-      {/* 左侧导航栏 */}
-      <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col border-r border-zinc-200 bg-white">
+    <div className="flex min-h-screen flex-col bg-zinc-50 text-zinc-900 md:flex-row">
+      {/* 电脑端左侧导航栏；手机端使用下方顶部横向导航 */}
+      <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-zinc-200 bg-white md:flex">
         <div className="flex items-center gap-2.5 border-b border-zinc-100 px-4 py-4">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100">
             <TrendingUp className="h-5 w-5 text-emerald-600" />
@@ -363,8 +363,51 @@ export default function Dashboard({ username, onLogout }: { username: string; on
         </div>
       </aside>
 
+      {/* 手机端顶部导航：横向滚动，避免侧栏挤占内容宽度 */}
+      <header className="sticky top-0 z-40 border-b border-zinc-200 bg-white md:hidden">
+        <div className="flex items-center gap-2 px-3 py-2.5">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-100">
+            <TrendingUp className="h-4 w-4 text-emerald-600" />
+          </div>
+          <div className="leading-tight">
+            <p className="text-sm font-bold">币安价格监控</p>
+            <p className="text-[11px] text-zinc-500">告警助手</p>
+          </div>
+          <button
+            onClick={handleLogout}
+            title="退出登录"
+            className="ml-auto rounded-md p-2 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
+        <nav className="flex gap-1 overflow-x-auto px-2 pb-2">
+          {([
+            ['monitors', '价格监控'],
+            ['ema', 'EMA 均线'],
+            ['corr', '相关度'],
+            ['div', 'BTC 背离'],
+            ['sec', 'SEC 财报'],
+            ['tv', 'TV 转发'],
+          ] as const).map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium ${
+                view === v ? 'bg-emerald-100 text-emerald-700' : 'text-zinc-600 hover:bg-zinc-100'
+              }`}
+            >
+              {label}
+              {v === 'div' && unreadDiv > 0 && <span className="ml-1 text-amber-600">{unreadDiv}</span>}
+              {v === 'corr' && unreadCorr > 0 && <span className="ml-1 text-amber-600">{unreadCorr}</span>}
+              {v === 'sec' && unreadSec > 0 && <span className="ml-1 text-violet-600">{unreadSec}</span>}
+            </button>
+          ))}
+        </nav>
+      </header>
+
       {/* 右侧内容区 */}
-      <main className="min-w-0 flex-1 px-6 py-6">
+      <main className="min-w-0 flex-1 px-3 py-4 sm:px-4 md:px-6 md:py-6">
         {view === 'tv' ? (
           <div className="mx-auto max-w-4xl">
             <h2 className="mb-4 text-lg font-bold">TradingView 转发</h2>

@@ -419,7 +419,7 @@ function MonitorCard({ m, onChanged }: { m: CorrMonitorType; onChanged: () => vo
 
   return (
     <Card className="border-border/60">
-      <CardHeader className="flex-row items-center justify-between space-y-0 py-3">
+      <CardHeader className="flex flex-col items-start gap-3 space-y-0 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-2">
           <CardTitle className="font-mono text-base">{m.symbol}</CardTitle>
           <span className="text-xs text-muted-foreground">vs BTCUSDT</span>
@@ -588,7 +588,7 @@ export default function CorrMonitor({
   return (
     <div className="space-y-4">
       <Card className="border-border/60">
-        <CardHeader className="flex-row items-center justify-between space-y-0 py-4">
+        <CardHeader className="flex flex-col items-start gap-3 space-y-0 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
             <CardTitle className="text-base">相关度监控（vs BTC）</CardTitle>
             <CardDescription>
@@ -625,7 +625,7 @@ export default function CorrMonitor({
       </Card>
 
       <Card className="border-border/60">
-        <CardHeader className="flex-row items-center justify-between space-y-0 py-4">
+        <CardHeader className="flex flex-col items-start gap-3 space-y-0 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             <BellRing className="h-4 w-4 text-amber-500" />
             <CardTitle className="text-base">相关度告警记录</CardTitle>

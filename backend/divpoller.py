@@ -45,37 +45,25 @@ KLINE_LIMIT = 450  # 覆盖 365 根展示 + 指标预热（EMA26 / DEA9 / RSI14 
 
 DIV_RULES_KEY = "div_rules"
 DIV_STATE_KEY = "div_rule_alert_state"
+WEBHOOK_RETRY_INTERVAL = 120  # 电话/饭碗失败后每 2 分钟重试
+WEBHOOK_MAX_RETRIES = 3  # 首次发送之外，最多再重试 3 次
 
 div_status: dict = {"ok": None, "error": "", "last_poll": None}
 # interval -> {candles, indicators, divergences, history, updated_at}（内存缓存，供 API 直接返回）
 div_cache: dict = {}
-
-
-def default_rules() -> list[dict]:
-    return [
-        {
-            "id": 1,
-            "name": "默认组合",
-            "kinds": list(KINDS),
-            "min_count": 2,
-            "intervals": list(DIV_INTERVALS),
-            "direction": "both",
-            "notify_webhook": True,
-            "enabled": True,
-        }
-    ]
+_webhook_tasks: set[asyncio.Task] = set()
 
 
 def get_rules() -> list[dict]:
+    """只读取用户显式保存的规则；没有规则时绝不自动创建默认告警。"""
     raw = database.get_state(DIV_RULES_KEY)
     if not raw:
-        return default_rules()
+        return []
     try:
         rules = json.loads(raw)
     except ValueError:
-        return default_rules()
-    # 空数组表示用户主动删除全部规则（暂停组合告警），不再回退默认规则
-    return rules if isinstance(rules, list) else default_rules()
+        return []
+    return rules if isinstance(rules, list) else []
 
 
 # ---------------- 指标计算 ----------------
@@ -366,17 +354,48 @@ async def _send_div_webhook(client: httpx.AsyncClient, alert: dict) -> tuple[boo
         "min_count": str(alert["min_count"]),
         "time": time_str,
     }
-    err = ""
-    for attempt in range(3):
-        try:
-            resp = await client.post(config.FWALERT_WEBHOOK, json=payload, timeout=10)
-            if resp.status_code < 400:
-                return True, ""
-            err = f"HTTP {resp.status_code}"
-        except Exception as e:  # noqa: BLE001
-            err = str(e)[:300]
-        await asyncio.sleep(2 * (attempt + 1))
-    return False, err
+    try:
+        resp = await client.post(config.FWALERT_WEBHOOK, json=payload, timeout=10)
+        if resp.status_code < 400:
+            return True, ""
+        return False, f"HTTP {resp.status_code}"
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[:300]
+
+
+async def _div_webhook_with_retry(client: httpx.AsyncClient, alert_id: int, alert: dict) -> None:
+    """独立后台发送：首次失败后每 2 分钟重试，最多重试 3 次，不阻塞行情检测。"""
+    try:
+        for attempt in range(WEBHOOK_MAX_RETRIES + 1):
+            ok, err = await _send_div_webhook(client, alert)
+            if ok:
+                database.set_div_alert_webhook(alert_id, True, "")
+                if attempt:
+                    log.info("背离告警 #%d 第 %d 次重试发送成功", alert_id, attempt)
+                return
+            if attempt >= WEBHOOK_MAX_RETRIES:
+                database.set_div_alert_webhook(alert_id, False, f"{err}（已重试 {WEBHOOK_MAX_RETRIES} 次）")
+                log.error("背离告警 #%d webhook 最终发送失败: %s", alert_id, err)
+                return
+            retry_no = attempt + 1
+            database.set_div_alert_webhook(
+                alert_id, False, f"{err}（2 分钟后进行第 {retry_no}/{WEBHOOK_MAX_RETRIES} 次重试）"
+            )
+            log.warning(
+                "背离告警 #%d webhook 发送失败: %s；2 分钟后第 %d/%d 次重试",
+                alert_id, err, retry_no, WEBHOOK_MAX_RETRIES
+            )
+            await asyncio.sleep(WEBHOOK_RETRY_INTERVAL)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        log.error("背离告警 #%d webhook 重试任务异常: %s", alert_id, e)
+
+
+def _schedule_div_webhook(client: httpx.AsyncClient, alert_id: int, alert: dict) -> None:
+    task = asyncio.create_task(_div_webhook_with_retry(client, alert_id, alert))
+    _webhook_tasks.add(task)
+    task.add_done_callback(_webhook_tasks.discard)
 
 
 async def _eval_alerts(client: httpx.AsyncClient, interval: str, rules: list[dict], divs: dict) -> None:
@@ -403,10 +422,7 @@ async def _eval_alerts(client: httpx.AsyncClient, interval: str, rules: list[dic
                 alert = database.get_div_alert(alert_id)
                 secpoller.publish({"type": "div_alert", "alert": alert})
                 if rule.get("notify_webhook", True):
-                    ok, err = await _send_div_webhook(client, alert)
-                    database.set_div_alert_webhook(alert_id, ok, err)
-                    if not ok:
-                        log.error("背离告警 webhook 发送失败: %s", err)
+                    _schedule_div_webhook(client, alert_id, alert)
                 state[key] = True
                 changed = True
             elif len(matched) < rule["min_count"] and active:

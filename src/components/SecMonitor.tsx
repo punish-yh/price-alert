@@ -159,7 +159,7 @@ function SecTaskDialog({ initial, onSaved }: { initial?: SecTask; onSaved: () =>
             />
             <p className="text-xs text-muted-foreground">用逗号或空格分隔，创建时会用 SEC 官方名录校验</p>
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="space-y-2">
               <Label htmlFor="sec-date">监听日期（北京）</Label>
               <Input
@@ -395,7 +395,7 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
       )}
 
       <Card className="border-border/60">
-        <CardHeader className="flex-row items-center justify-between space-y-0 py-4">
+        <CardHeader className="flex flex-col items-start gap-3 space-y-0 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <CardTitle className="flex items-center gap-2 text-base">
               <FileText className="h-4 w-4 text-emerald-600" />
