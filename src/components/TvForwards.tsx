@@ -319,20 +319,29 @@ export default function TvForwards() {
       exchange: string
       symbol: string
       filterType: string
-      signals: Partial<Record<string, TvForward>>
+      directionalSignals: Partial<Record<string, TvForward>>
+      breakoutSignals: Partial<Record<string, TvForward>>
     }>()
     for (const signal of [...items, ...currentActive]) {
       if (!signal.exchange || !signal.filter_type || signal.parse_error) continue
       const key = `${signal.exchange}:${signal.symbol}|${signal.filter_type}`
       if (!groups.has(key)) {
-        groups.set(key, { exchange: signal.exchange, symbol: signal.symbol, filterType: signal.filter_type, signals: {} })
+        groups.set(key, {
+          exchange: signal.exchange,
+          symbol: signal.symbol,
+          filterType: signal.filter_type,
+          directionalSignals: {},
+          breakoutSignals: {},
+        })
       }
     }
     for (const signal of currentActive) {
       const key = `${signal.exchange}:${signal.symbol}|${signal.filter_type}`
       const group = groups.get(key)
-      if (group && (!group.signals[signal.interval] || signal.id > group.signals[signal.interval]!.id)) {
-        group.signals[signal.interval] = signal
+      if (!group) continue
+      const signals = signal.direction === 'breakout' ? group.breakoutSignals : group.directionalSignals
+      if (!signals[signal.interval] || signal.id > signals[signal.interval]!.id) {
+        signals[signal.interval] = signal
       }
     }
     return [...groups.values()].sort((a, b) =>
@@ -421,32 +430,64 @@ export default function TvForwards() {
                   {signalGroups.map((group) => (
                     <div key={`${group.exchange}:${group.symbol}|${group.filterType}`} className="rounded-lg border border-border/60 px-3 py-3 text-sm">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="secondary">{FILTER_CN[group.filterType]}</Badge>
+                        <Badge
+                          variant="outline"
+                          className={group.filterType === 'wave'
+                            ? 'border-sky-200 bg-sky-50 text-sky-700'
+                            : 'border-violet-200 bg-violet-50 text-violet-700'}
+                        >
+                          {FILTER_CN[group.filterType]}
+                        </Badge>
                         <span className="font-mono font-semibold">{group.exchange}:{group.symbol}</span>
                       </div>
-                      <div className="mt-3 grid grid-cols-4 gap-2">
-                        {SIGNAL_INTERVALS.map((interval) => {
-                          const signal = group.signals[interval]
-                          const direction = signal?.direction
-                          const color = direction === 'bullish'
-                            ? 'bg-emerald-500'
-                            : direction === 'bearish'
-                              ? 'bg-red-500'
-                              : direction === 'breakout'
-                                ? 'bg-amber-400'
-                                : 'bg-zinc-300'
-                          const status = signal ? DIRECTION_CN[direction || ''] : '未触发'
-                          return (
-                            <div
-                              key={interval}
-                              className="flex items-center justify-center gap-1.5 rounded-md bg-zinc-50 px-2 py-2"
-                              title={signal ? `${interval} ${status}｜有效至 ${fmtTime(signal.valid_until)}` : `${interval} 未触发`}
-                            >
-                              <span className={`h-3 w-3 shrink-0 rounded-full ${color}`} aria-label={status} />
-                              <span className="text-xs font-medium text-zinc-600">{interval}</span>
-                            </div>
-                          )
-                        })}
+                      <div className="mt-3 space-y-2">
+                        <div className="grid grid-cols-[2.5rem_1fr] items-center gap-2">
+                          <span className="text-xs text-muted-foreground">方向</span>
+                          <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
+                            {SIGNAL_INTERVALS.map((interval) => {
+                              const signal = group.directionalSignals[interval]
+                              const direction = signal?.direction
+                              const color = direction === 'bullish'
+                                ? 'bg-emerald-500'
+                                : direction === 'bearish'
+                                  ? 'bg-red-500'
+                                  : 'bg-zinc-300'
+                              const status = signal ? DIRECTION_CN[direction || ''] : '未触发'
+                              return (
+                                <div
+                                  key={interval}
+                                  className="flex items-center justify-center gap-1.5 rounded-md bg-zinc-50 px-1.5 py-2"
+                                  title={signal ? `${interval} ${status}｜有效至 ${fmtTime(signal.valid_until)}` : `${interval} 方向信号未触发`}
+                                >
+                                  <span className={`h-3 w-3 shrink-0 rounded-full ${color}`} aria-label={`${interval} ${status}`} />
+                                  <span className="text-xs font-medium text-zinc-600">{interval}</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-[2.5rem_1fr] items-center gap-2">
+                          <span className="text-xs text-muted-foreground">突破</span>
+                          <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
+                            {SIGNAL_INTERVALS.map((interval) => {
+                              const signal = group.breakoutSignals[interval]
+                              const status = signal ? '突破预警' : '未触发'
+                              return (
+                                <div
+                                  key={interval}
+                                  className="flex items-center justify-center gap-1.5 rounded-md bg-zinc-50 px-1.5 py-2"
+                                  title={signal ? `${interval} 突破预警｜有效至 ${fmtTime(signal.valid_until)}` : `${interval} 突破预警未触发`}
+                                >
+                                  <span
+                                    className={`h-3 w-3 shrink-0 rounded-full ${signal ? 'bg-amber-400' : 'bg-zinc-300'}`}
+                                    aria-label={`${interval} ${status}`}
+                                  />
+                                  <span className="text-xs font-medium text-zinc-600">{interval}</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ))}
