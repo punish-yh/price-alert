@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -21,7 +20,10 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { toast } from 'sonner'
-import type { Direction, Monitor } from '@/types'
+import type { Direction, Monitor, MonitorType } from '@/types'
+
+const EMA_PERIODS = [21, 55, 100, 200]
+const EMA_INTERVALS = ['15m', '1h', '4h', '1d']
 
 interface Props {
   prices: Record<string, number>
@@ -29,12 +31,15 @@ interface Props {
   onSaved: () => void
 }
 
-/** 价格监控新建 / 编辑对话框（initial 传入即为编辑） */
+/** 价格 / EMA 监控新建对话框；initial 传入时为价格监控编辑 */
 export default function MonitorDialog({ prices, initial, onSaved }: Props) {
   const [open, setOpen] = useState(false)
+  const [monitorType, setMonitorType] = useState<MonitorType>('price')
   const [symbol, setSymbol] = useState('')
   const [direction, setDirection] = useState<Direction>('above')
   const [price, setPrice] = useState('')
+  const [interval, setInterval] = useState('1h')
+  const [emaPeriod, setEmaPeriod] = useState('55')
   const [note, setNote] = useState('')
   const [symbols, setSymbols] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
@@ -58,9 +63,12 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
     const key = initial ? `edit:${initial.id}` : 'new'
     if (initializedFor.current === key) return
     initializedFor.current = key
+    setMonitorType('price')
     setSymbol(initial?.symbol || '')
     setDirection(initial?.direction || 'above')
     setPrice(initial ? String(initial.target_price) : '')
+    setInterval('1h')
+    setEmaPeriod('55')
     setNote(initial?.note || '')
   }, [open, initial])
 
@@ -72,25 +80,42 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (!symbol.trim()) {
+      toast.error('请填写交易对')
+      return
+    }
     const target = Number(price)
-    if (!symbol.trim() || !target || target <= 0) {
-      toast.error('请填写正确的交易对和目标价')
+    if (monitorType === 'price' && (!target || target <= 0)) {
+      toast.error('请填写正确的目标价')
       return
     }
     setSubmitting(true)
     try {
-      const payload = {
-        symbol: symbol.trim().toUpperCase(),
-        direction,
-        target_price: target,
-        note: note.trim(),
-      }
+      const normalizedSymbol = symbol.trim().toUpperCase()
       if (initial) {
-        await api.updateMonitor(initial.id, payload)
+        await api.updateMonitor(initial.id, {
+          symbol: normalizedSymbol,
+          direction,
+          target_price: target,
+          note: note.trim(),
+        })
         toast.success('监控已更新')
+      } else if (monitorType === 'ema_cross') {
+        await api.createEmaMonitor({
+          symbol: normalizedSymbol,
+          ema_period: Number(emaPeriod),
+          interval,
+          note: note.trim(),
+        })
+        toast.success('EMA 监控已创建，将在下一根 K 线收盘后开始判定')
       } else {
-        await api.createMonitor(payload)
-        toast.success('监控已创建')
+        await api.createMonitor({
+          symbol: normalizedSymbol,
+          direction,
+          target_price: target,
+          note: note.trim(),
+        })
+        toast.success('价格监控已创建')
       }
       setOpen(false)
       onSaved()
@@ -123,14 +148,23 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
       )}
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{initial ? '编辑价格监控' : '新建价格监控'}</DialogTitle>
-          <DialogDescription>
-            每 5 分钟检查一次 5 分钟 K 线。价格取「合约优先」：该交易对有 USDT
-            永续合约就看合约价，没有合约才用现货价。K 线的 开 / 收 / 高 / 低
-            任一价格触及目标价即触发一次饭碗告警通知。
-          </DialogDescription>
+          <DialogTitle>{initial ? '编辑价格监控' : '新建监控'}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
+          {!initial && (
+            <div className="space-y-2">
+              <Label>监控类型</Label>
+              <Select value={monitorType} onValueChange={(v) => setMonitorType(v as MonitorType)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="price">价格监控</SelectItem>
+                  <SelectItem value="ema_cross">EMA 均线监控</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="symbol">交易对</Label>
             <Input
@@ -147,7 +181,7 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
                 <option key={s} value={s} />
               ))}
             </datalist>
-            {currentPrice !== undefined && (
+            {monitorType === 'price' && currentPrice !== undefined && (
               <button
                 type="button"
                 className="text-xs text-emerald-500 hover:underline"
@@ -157,33 +191,68 @@ export default function MonitorDialog({ prices, initial, onSaved }: Props) {
               </button>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>触发方向</Label>
-              <Select value={direction} onValueChange={(v) => setDirection(v as Direction)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="above">大于</SelectItem>
-                  <SelectItem value="below">小于</SelectItem>
-                </SelectContent>
-              </Select>
+          {!initial && monitorType === 'ema_cross' ? (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>K 线周期</Label>
+                <Select value={interval} onValueChange={setInterval}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {EMA_INTERVALS.map((i) => (
+                      <SelectItem key={i} value={i}>
+                        {i}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>EMA 均线</Label>
+                <Select value={emaPeriod} onValueChange={setEmaPeriod}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {EMA_PERIODS.map((p) => (
+                      <SelectItem key={p} value={String(p)}>
+                        EMA{p}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="price">目标价 (USDT)</Label>
-              <Input
-                id="price"
-                type="number"
-                step="any"
-                min="0"
-                placeholder="0.00"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                required
-              />
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>触发方向</Label>
+                <Select value={direction} onValueChange={(v) => setDirection(v as Direction)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="above">大于</SelectItem>
+                    <SelectItem value="below">小于</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="price">目标价 (USDT)</Label>
+                <Input
+                  id="price"
+                  type="number"
+                  step="any"
+                  min="0"
+                  placeholder="0.00"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  required
+                />
+              </div>
             </div>
-          </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="note">备注（可选）</Label>
             <Input

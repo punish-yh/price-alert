@@ -1,14 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  Activity,
-  BellRing,
-  Loader2,
-  Pencil,
-  Plus,
-  RotateCcw,
-  Trash2,
-  XCircle,
-} from 'lucide-react'
+import { Activity, BellRing, Loader2, Pencil, RotateCcw, Trash2, XCircle } from 'lucide-react'
 import { api, fmtPrice, fmtTime } from '@/lib/api'
 import type { Monitor, MonitorStatus } from '@/types'
 import { Badge } from '@/components/ui/badge'
@@ -17,11 +8,9 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -32,7 +21,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from 'sonner'
 
 const EMA_PERIODS = [21, 55, 100, 200]
@@ -116,31 +104,18 @@ function EmaDialog({ initial, onSaved }: { initial?: Monitor; onSaved: () => voi
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      {initial ? (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
-          onClick={() => setOpen(true)}
-        >
-          <Pencil className="mr-1 h-3.5 w-3.5" />
-          编辑
-        </Button>
-      ) : (
-        <DialogTrigger asChild>
-          <Button className="bg-emerald-600 text-white hover:bg-emerald-500">
-            <Plus className="mr-1.5 h-4 w-4" />
-            新建 EMA 监控
-          </Button>
-        </DialogTrigger>
-      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 px-2 text-xs text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+        onClick={() => setOpen(true)}
+      >
+        <Pencil className="mr-1 h-3.5 w-3.5" />
+        编辑
+      </Button>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{initial ? '编辑 EMA 均线监控' : '新建 EMA 均线监控'}</DialogTitle>
-          <DialogDescription>
-            在选定周期的每根 K 线收盘时检查一次：收盘价上穿、下穿，或影线触及（插针）所选 EMA
-            均线即触发一次告警。价格取「合约优先」：有 USDT 永续合约看合约价，无合约用现货价。
-          </DialogDescription>
+          <DialogTitle>编辑 EMA 均线监控</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
@@ -220,20 +195,14 @@ function EmaDialog({ initial, onSaved }: { initial?: Monitor; onSaved: () => voi
 interface Props {
   monitors: Monitor[]
   prices: Record<string, number>
+  tab: MonitorStatus
   onDelete: (id: number) => Promise<void>
   onRestore: (id: number) => Promise<void>
   onChanged: () => void
 }
 
-export default function EmaMonitors({ monitors, prices, onDelete, onRestore, onChanged }: Props) {
-  const [tab, setTab] = useState<MonitorStatus>('active')
+export default function EmaMonitors({ monitors, prices, tab, onDelete, onRestore, onChanged }: Props) {
   const [busyId, setBusyId] = useState<number | null>(null)
-
-  const counts = useMemo(() => {
-    const c: Record<MonitorStatus, number> = { active: 0, triggered: 0, deleted: 0 }
-    for (const m of monitors) c[m.status] += 1
-    return c
-  }, [monitors])
 
   const groups = useMemo(() => {
     const filtered = monitors.filter((m) => m.status === tab)
@@ -257,28 +226,12 @@ export default function EmaMonitors({ monitors, prices, onDelete, onRestore, onC
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Tabs value={tab} onValueChange={(v) => setTab(v as MonitorStatus)}>
-          <TabsList className="bg-white">
-            {TABS.map((t) => (
-              <TabsTrigger key={t.value} value={t.value}>
-                {t.label}
-                <span className="ml-1.5 rounded-full bg-zinc-100 px-1.5 text-xs tabular-nums text-zinc-600">
-                  {counts[t.value]}
-                </span>
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <EmaDialog onSaved={onChanged} />
-      </div>
-
       {groups.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-white py-20 text-zinc-500">
           <Activity className="h-8 w-8 opacity-40" />
           <p>
             {tab === 'active'
-              ? '还没有活跃的 EMA 监控，点击右上角「新建 EMA 监控」开始'
+              ? '还没有活跃的 EMA 监控，点击右上角「新建监控」开始'
               : `暂无${TABS.find((t) => t.value === tab)?.label}的监控`}
           </p>
         </div>

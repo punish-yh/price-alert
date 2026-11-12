@@ -246,9 +246,9 @@ export default function Dashboard({ username, onLogout }: { username: string; on
 
   const counts = useMemo(() => {
     const c: Record<MonitorStatus, number> = { active: 0, triggered: 0, deleted: 0 }
-    for (const m of priceMonitors) c[m.status] += 1
+    for (const m of monitors) c[m.status] += 1
     return c
-  }, [priceMonitors])
+  }, [monitors])
 
   const groups = useMemo(() => {
     const filtered = priceMonitors.filter((m) => m.status === tab)
@@ -606,6 +606,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
                 <EmaMonitors
                   monitors={emaMonitors}
                   prices={priceInfo?.prices || {}}
+                  tab={tab}
                   onDelete={handleDelete}
                   onRestore={handleRestore}
                   onChanged={() => refresh(true)}

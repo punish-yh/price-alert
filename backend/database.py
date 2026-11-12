@@ -161,6 +161,21 @@ def init_db() -> None:
             """
         )
         _conn.execute("CREATE INDEX IF NOT EXISTS idx_sec_seen_ticker ON sec_seen(ticker)")
+        # 任务捕获进度独立保存：展示记录裁剪到最近 10 条后，多标的状态不能回退
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sec_task_captures (
+                task_id     INTEGER NOT NULL,
+                ticker      TEXT    NOT NULL,
+                accession   TEXT    NOT NULL,
+                PRIMARY KEY (task_id, ticker, accession)
+            )
+            """
+        )
+        _conn.execute(
+            """INSERT OR IGNORE INTO sec_task_captures (task_id, ticker, accession)
+               SELECT task_id, ticker, accession FROM sec_hits WHERE baseline=0"""
+        )
         # 应用级键值状态（如：价格监控「已触发」的已读水位）
         _conn.execute(
             "CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -290,6 +305,12 @@ def init_db() -> None:
         )
         _conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_bias_alerts_time ON bias_alerts(created_at)"
+        )
+
+        # 财报捕获记录只保留最新 10 条；sec_seen 独立保留，不会重复回填旧申报
+        _conn.execute(
+            """DELETE FROM sec_hits WHERE id NOT IN (
+                   SELECT id FROM sec_hits ORDER BY id DESC LIMIT 10)"""
         )
 
 
@@ -722,10 +743,22 @@ def add_sec_hit(
             (task_id, ticker, form, filing_date, accession, primary_doc, url,
              1 if baseline else 0, _now()),
         )
-        return cur.rowcount > 0
+        inserted = cur.rowcount > 0
+        if inserted and not baseline:
+            _conn.execute(
+                """INSERT OR IGNORE INTO sec_task_captures (task_id, ticker, accession)
+                   VALUES (?,?,?)""",
+                (task_id, ticker, accession),
+            )
+        if inserted:
+            _conn.execute(
+                """DELETE FROM sec_hits WHERE id NOT IN (
+                       SELECT id FROM sec_hits ORDER BY id DESC LIMIT 10)"""
+            )
+        return inserted
 
 
-def list_sec_hits(limit: int = 100) -> list[dict[str, Any]]:
+def list_sec_hits(limit: int = 10) -> list[dict[str, Any]]:
     with _lock:
         rows = _conn.execute(
             "SELECT * FROM sec_hits ORDER BY id DESC LIMIT ?", (limit,)
@@ -737,13 +770,6 @@ def get_sec_hit(hit_id: int) -> Optional[dict[str, Any]]:
     with _lock:
         row = _conn.execute("SELECT * FROM sec_hits WHERE id=?", (hit_id,)).fetchone()
     return _row_to_dict(row) if row else None
-
-
-def delete_sec_hit(hit_id: int) -> bool:
-    """只删除展示记录，不触碰 sec_seen 中的申报去重标记"""
-    with _lock, _conn:
-        cur = _conn.execute("DELETE FROM sec_hits WHERE id=?", (hit_id,))
-        return cur.rowcount > 0
 
 
 def mark_sec_hit_read(hit_id: int) -> bool:
@@ -784,10 +810,10 @@ def ticker_has_hits(ticker: str) -> bool:
 
 
 def sec_task_hit_counts() -> dict[int, int]:
-    """每个任务捕获到的非存量（新发）财报数"""
+    """每个任务捕获到的非存量（新发）财报数，独立于展示记录保留期"""
     with _lock:
         rows = _conn.execute(
-            "SELECT task_id, COUNT(*) AS n FROM sec_hits WHERE baseline=0 GROUP BY task_id"
+            "SELECT task_id, COUNT(*) AS n FROM sec_task_captures GROUP BY task_id"
         ).fetchall()
     return {r["task_id"]: r["n"] for r in rows}
 
@@ -796,7 +822,7 @@ def sec_task_hit_tickers() -> dict[int, set[str]]:
     """每个任务已捕获到（非存量）财报的标的集合，用于判断多标的是否全部命中"""
     with _lock:
         rows = _conn.execute(
-            "SELECT task_id, ticker FROM sec_hits WHERE baseline=0 GROUP BY task_id, ticker"
+            "SELECT task_id, ticker FROM sec_task_captures GROUP BY task_id, ticker"
         ).fetchall()
     out: dict[int, set[str]] = {}
     for r in rows:

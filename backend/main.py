@@ -494,18 +494,6 @@ async def sec_hits_read_all(
     return {"ok": True, "marked": marked, "unread": database.unread_sec_hits_count()}
 
 
-@app.post("/api/sec/hits/{hit_id}/delete")
-async def sec_hit_delete(
-    hit_id: int,
-    user: str = auth.CurrentUser,
-    _: None = auth.CsrfGuard,
-):
-    """仅删除展示记录；sec_seen 去重标记保留，不会重新回填旧财报"""
-    if not database.delete_sec_hit(hit_id):
-        raise HTTPException(404, "财报记录不存在")
-    return {"ok": True, "unread": database.unread_sec_hits_count()}
-
-
 @app.get("/api/sec/events")
 async def sec_events(user: str = auth.CurrentUser):
     """SEC 新财报实时推送（SSE）：命中即刻发到网页，替代前端轮询的秒级延迟"""

@@ -4,11 +4,10 @@ import { api, fmtTime } from '@/lib/api'
 import type { TvComboAlert, TvComboRule, TvCondition, TvForward } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -31,6 +30,7 @@ const DIRECTION_CN: Record<string, string> = {
   breakout: '突破预警',
 }
 const INTERVALS = ['15m', '1h', '4h', '1d'] as const
+const SIGNAL_INTERVALS = ['1d', '4h', '1h', '15m'] as const
 
 const WAVE_TEMPLATE = `【波段过滤器】
 币种：{{exchange}}:{{ticker}}
@@ -152,7 +152,6 @@ function RuleEditor({
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{initial ? '编辑 TV 组合告警' : '新建 TV 组合告警'}</DialogTitle>
-          <DialogDescription>同一币种的全部条件同时处于有效窗口时触发；每个条件可独立选择过滤器、周期和方向</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -315,13 +314,37 @@ export default function TvForwards() {
   }
 
   const currentActive = active.filter((signal) => Date.parse(signal.valid_until) > Date.now())
+  const signalGroups = (() => {
+    const groups = new Map<string, {
+      exchange: string
+      symbol: string
+      filterType: string
+      signals: Partial<Record<string, TvForward>>
+    }>()
+    for (const signal of [...items, ...currentActive]) {
+      if (!signal.exchange || !signal.filter_type || signal.parse_error) continue
+      const key = `${signal.exchange}:${signal.symbol}|${signal.filter_type}`
+      if (!groups.has(key)) {
+        groups.set(key, { exchange: signal.exchange, symbol: signal.symbol, filterType: signal.filter_type, signals: {} })
+      }
+    }
+    for (const signal of currentActive) {
+      const key = `${signal.exchange}:${signal.symbol}|${signal.filter_type}`
+      const group = groups.get(key)
+      if (group && (!group.signals[signal.interval] || signal.id > group.signals[signal.interval]!.id)) {
+        group.signals[signal.interval] = signal
+      }
+    }
+    return [...groups.values()].sort((a, b) =>
+      `${a.exchange}:${a.symbol}`.localeCompare(`${b.exchange}:${b.symbol}`) || a.filterType.localeCompare(b.filterType)
+    )
+  })()
 
   return (
     <div className="space-y-4">
       <Card className="border-border/60">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base"><Radio className="h-4 w-4 text-emerald-600" />TradingView Webhook 地址</CardTitle>
-          <CardDescription>地址保持不变。收到消息后只解析并维护有效信号，不再逐条直接转发；满足下方组合后才告警。</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex items-center gap-2">
@@ -352,7 +375,6 @@ export default function TvForwards() {
           <Card className="border-border/60">
             <CardHeader className="space-y-1 py-4">
               <CardTitle className="text-base">接收到的告警历史</CardTitle>
-              <CardDescription>保留原始消息、结构化结果和解析失败原因；旧版记录也会继续保留</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 pt-0">
               {loading ? (
@@ -390,18 +412,42 @@ export default function TvForwards() {
           <Card className="border-border/60">
             <CardHeader className="space-y-1 py-4">
               <CardTitle className="text-base">当前有效的信号</CardTitle>
-              <CardDescription>同一币种、过滤器、周期和方向只展示最新一条；到期后自动移出，无需手动清理</CardDescription>
             </CardHeader>
             <CardContent className="pt-0">
-              {currentActive.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted-foreground">当前没有处于有效期内的信号</p>
+              {signalGroups.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted-foreground">还没有收到可展示的信号</p>
               ) : (
                 <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
-                  {currentActive.map((signal) => (
-                    <div key={signal.id} className="rounded-lg border border-border/60 px-3 py-3 text-sm">
-                      <div className="flex flex-wrap items-center gap-2"><SignalBadges signal={signal} /></div>
-                      <p className="mt-2 font-mono font-semibold">{signal.exchange}:{signal.symbol}</p>
-                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">触发：{fmtUtc(signal.trigger_time)}<br />有效至：{fmtTime(signal.valid_until)}</p>
+                  {signalGroups.map((group) => (
+                    <div key={`${group.exchange}:${group.symbol}|${group.filterType}`} className="rounded-lg border border-border/60 px-3 py-3 text-sm">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="secondary">{FILTER_CN[group.filterType]}</Badge>
+                        <span className="font-mono font-semibold">{group.exchange}:{group.symbol}</span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-4 gap-2">
+                        {SIGNAL_INTERVALS.map((interval) => {
+                          const signal = group.signals[interval]
+                          const direction = signal?.direction
+                          const color = direction === 'bullish'
+                            ? 'bg-emerald-500'
+                            : direction === 'bearish'
+                              ? 'bg-red-500'
+                              : direction === 'breakout'
+                                ? 'bg-amber-400'
+                                : 'bg-zinc-300'
+                          const status = signal ? DIRECTION_CN[direction || ''] : '未触发'
+                          return (
+                            <div
+                              key={interval}
+                              className="flex items-center justify-center gap-1.5 rounded-md bg-zinc-50 px-2 py-2"
+                              title={signal ? `${interval} ${status}｜有效至 ${fmtTime(signal.valid_until)}` : `${interval} 未触发`}
+                            >
+                              <span className={`h-3 w-3 shrink-0 rounded-full ${color}`} aria-label={status} />
+                              <span className="text-xs font-medium text-zinc-600">{interval}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -414,7 +460,6 @@ export default function TvForwards() {
           <Card className="border-border/60">
             <CardHeader className="space-y-1 py-4">
               <CardTitle className="text-base">当前配置的组合告警</CardTitle>
-              <CardDescription>全部条件同时有效才触发；同一组合窗口只告警一次，任一条件失效后重新武装</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 pt-0">
               {rules.length === 0 ? (
@@ -445,7 +490,6 @@ export default function TvForwards() {
           <Card className="border-border/60">
             <CardHeader className="space-y-1 py-4">
               <CardTitle className="flex items-center gap-2 text-base"><BellRing className="h-4 w-4 text-amber-500" />组合触发记录</CardTitle>
-              <CardDescription>记录每次触发时实际命中的周期、过滤器、方向与有效窗口</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 pt-0">
               {comboAlerts.length === 0 ? (

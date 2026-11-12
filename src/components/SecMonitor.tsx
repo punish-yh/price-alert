@@ -18,7 +18,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -140,11 +139,6 @@ function SecTaskDialog({ initial, onSaved }: { initial?: SecTask; onSaved: () =>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{initial ? '编辑 SEC 财报监听' : '新建 SEC 财报监听'}</DialogTitle>
-          <DialogDescription>
-            只在指定的「日期 + 北京时间窗口」内监听 SEC EDGAR，窗口支持跨夜（如 20:00 –
-            次日 06:00）。标的发布 8-K 业绩公告（含 Item 2.02 的业绩发布稿，追涨最敏感的信号；
-            其余 8-K 公告不通知）即视为已获取，页面弹窗提醒；窗口结束仍未捕获则标记为监听失败。
-          </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
@@ -219,8 +213,6 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
   const [busyId, setBusyId] = useState<number | null>(null)
   const [markingId, setMarkingId] = useState<number | null>(null)
   const [markingAll, setMarkingAll] = useState(false)
-  const [deletingHitId, setDeletingHitId] = useState<number | null>(null)
-  const [showOlder, setShowOlder] = useState(false)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refreshTasks = useCallback(async (silent = false) => {
@@ -263,19 +255,6 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
     }
   }
 
-  async function handleDeleteHit(id: number) {
-    setDeletingHitId(id)
-    try {
-      await api.deleteSecHit(id)
-      toast.success('财报记录已删除')
-      onChanged()
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : '删除失败')
-    } finally {
-      setDeletingHitId(null)
-    }
-  }
-
   async function handleMarkRead(id: number) {
     setMarkingId(id)
     try {
@@ -301,12 +280,10 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
     }
   }
 
-  const freshHits = hits.filter((h) => !h.baseline)
-  const recentFreshHits = freshHits.slice(0, 10)
-  const olderHits = [...freshHits.slice(10), ...hits.filter((h) => h.baseline)]
-  const unreadCount = freshHits.filter((h) => !h.read_at).length
+  const recentHits = hits.slice(0, 10)
+  const unreadCount = hits.filter((h) => !h.baseline && !h.read_at).length
 
-  const hitRow = (h: SecHit, deletable = false) => {
+  const hitRow = (h: SecHit) => {
     const unread = !h.read_at
     return (
       <div
@@ -352,7 +329,7 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
                 variant="outline"
                 size="sm"
                 className="h-7 border-amber-300 bg-white px-2 text-xs text-amber-700 hover:bg-amber-50"
-                disabled={markingId !== null || markingAll || deletingHitId !== null}
+                disabled={markingId !== null || markingAll}
                 onClick={() => handleMarkRead(h.id)}
               >
                 {markingId === h.id ? (
@@ -371,22 +348,6 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
                 已阅
               </span>
             ))}
-          {deletable && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs text-red-500 hover:bg-red-50 hover:text-red-600"
-              disabled={deletingHitId !== null || markingId !== null || markingAll}
-              onClick={() => handleDeleteHit(h.id)}
-            >
-              {deletingHitId === h.id ? (
-                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Trash2 className="mr-1 h-3.5 w-3.5" />
-              )}
-              删除
-            </Button>
-          )}
         </span>
       </div>
     )
@@ -552,31 +513,17 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
               </Button>
             )}
             <Badge variant="outline" className="text-muted-foreground">
-              {freshHits.length} 条
+              {recentHits.length} 条
             </Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-2 pt-0">
-          {freshHits.length === 0 ? (
+          {recentHits.length === 0 ? (
             <p className="rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted-foreground">
               还没有捕获到新财报。任务创建后新发布的 8-K 业绩公告会第一时间出现在这里并弹窗提醒。
             </p>
           ) : (
-            recentFreshHits.map((h) => hitRow(h))
-          )}
-          {olderHits.length > 0 && (
-            <div className="pt-1">
-              <button
-                type="button"
-                className="text-xs text-zinc-400 hover:text-zinc-600 hover:underline"
-                onClick={() => setShowOlder((v) => !v)}
-              >
-                {showOlder ? '收起' : '展开'}更早的捕获记录（{olderHits.length} 条，可逐条删除）
-              </button>
-              {showOlder && (
-                <div className="mt-2 space-y-2">{olderHits.map((h) => hitRow(h, true))}</div>
-              )}
-            </div>
+            recentHits.map((h) => hitRow(h))
           )}
         </CardContent>
       </Card>
