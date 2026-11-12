@@ -336,11 +336,11 @@ export default function TvForwards() {
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="history" className="gap-4">
+      <Tabs defaultValue="active" className="gap-4">
         <TabsList className="grid h-10 w-full grid-cols-3">
-          <TabsTrigger value="history">接收历史（{items.length}）</TabsTrigger>
-          <TabsTrigger value="active">当前有效（{currentActive.length}）</TabsTrigger>
-          <TabsTrigger value="rules">组合告警（{rules.length}）</TabsTrigger>
+          <TabsTrigger value="active">当前有效</TabsTrigger>
+          <TabsTrigger value="rules">组合告警</TabsTrigger>
+          <TabsTrigger value="history">接收历史</TabsTrigger>
         </TabsList>
 
         <TabsContent value="history">
