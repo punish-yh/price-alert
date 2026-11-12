@@ -21,6 +21,8 @@ log = logging.getLogger("tvrelay")
 
 MAX_BODY_BYTES = 16 * 1024
 INTERVALS = ("15m", "1h", "4h", "1d")
+# TradingView {{interval}} 对分钟周期返回数字：15 / 60 / 240；日线通常返回 1D
+INTERVAL_ALIASES = {"15": "15m", "60": "1h", "240": "4h", "1440": "1d"}
 INTERVAL_SECONDS = {"15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 FILTER_TYPES = {"wave": "波段过滤器", "trend": "趋势过滤器"}
 DIRECTIONS = {"bullish": "所有看涨信号", "bearish": "所有看跌信号"}
@@ -82,9 +84,10 @@ def parse_signal(raw: str) -> tuple[dict | None, str]:
     if not exchange or not symbol or not re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,31}", symbol):
         return None, "交易所或币种代码格式不正确"
 
-    interval = fields.get("周期", "").strip().lower()
+    raw_interval = fields.get("周期", "").strip().lower()
+    interval = INTERVAL_ALIASES.get(raw_interval, raw_interval)
     if interval not in INTERVALS:
-        return None, "周期仅支持 15m、1h、4h、1d"
+        return None, "周期仅支持 15m、1h、4h、1d（或 TradingView 数字周期 15、60、240、1440）"
     signal_group = fields.get("信号组", "").strip()
     direction = next((key for key, text in DIRECTIONS.items() if text == signal_group), "")
     if not direction:
