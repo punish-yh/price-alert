@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Bell, CandlestickChart, FileSearch, GitCompareArrows, LineChart, Loader2, LogOut, Percent, Radio, TrendingUp } from 'lucide-react'
+import { Activity, Bell, CandlestickChart, FileSearch, GitCompareArrows, Loader2, LogOut, Percent, Radio, TrendingUp } from 'lucide-react'
 import { api, fmtTime } from '@/lib/api'
 import type { BiasAlert, CorrAlert, DivAlert, Monitor, MonitorStatus, PricesResponse, SecHit, SecStatus, TvComboAlert } from '@/types'
 import BiasMonitor from '@/components/BiasMonitor'
@@ -19,7 +19,7 @@ const TABS: { value: MonitorStatus; label: string }[] = [
   { value: 'deleted', label: '已删除' },
 ]
 
-type View = 'monitors' | 'ema' | 'tv' | 'sec' | 'corr' | 'div' | 'bias'
+type View = 'monitors' | 'tv' | 'sec' | 'corr' | 'div' | 'bias'
 
 export default function Dashboard({ username, onLogout }: { username: string; onLogout: () => void }) {
   const [monitors, setMonitors] = useState<Monitor[]>([])
@@ -250,11 +250,6 @@ export default function Dashboard({ username, onLogout }: { username: string; on
     return c
   }, [priceMonitors])
 
-  const emaActiveCount = useMemo(
-    () => emaMonitors.filter((m) => m.status === 'active').length,
-    [emaMonitors]
-  )
-
   const groups = useMemo(() => {
     const filtered = priceMonitors.filter((m) => m.status === tab)
     const map = new Map<string, Monitor[]>()
@@ -346,11 +341,6 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           {unreadTriggered}
         </span>
       )}
-      {v === 'ema' && emaActiveCount > 0 && (
-        <span className="ml-auto rounded-full bg-emerald-100 px-2 py-0.5 text-xs tabular-nums text-emerald-700">
-          {emaActiveCount}
-        </span>
-      )}
       {v === 'sec' && unreadSec > 0 && (
         <span className="ml-auto rounded-full bg-violet-100 px-2 py-0.5 text-xs tabular-nums text-violet-700">
           {unreadSec}
@@ -390,7 +380,6 @@ export default function Dashboard({ username, onLogout }: { username: string; on
 
         <nav className="flex-1 space-y-1 p-3">
           {navItem('monitors', <Bell className="h-4 w-4" />, '价格监控')}
-          {navItem('ema', <LineChart className="h-4 w-4" />, 'EMA 均线监控')}
           {navItem('corr', <GitCompareArrows className="h-4 w-4" />, '相关度计算')}
           {navItem('div', <CandlestickChart className="h-4 w-4" />, 'BTC 背离监控')}
           {navItem('bias', <Percent className="h-4 w-4" />, 'BTC 乖离率')}
@@ -448,7 +437,6 @@ export default function Dashboard({ username, onLogout }: { username: string; on
         <nav className="flex gap-1 overflow-x-auto px-2 pb-2">
           {([
             ['monitors', '价格监控'],
-            ['ema', 'EMA 均线'],
             ['corr', '相关度'],
             ['div', 'BTC 背离'],
             ['bias', 'BTC 乖离率'],
@@ -498,17 +486,6 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           <div className="mx-auto max-w-7xl">
             <h2 className="mb-4 text-lg font-bold">BTC 乖离率</h2>
             <BiasMonitor alerts={biasAlerts} unread={unreadBias} onChanged={() => refresh(true)} />
-          </div>
-        ) : view === 'ema' ? (
-          <div className="mx-auto max-w-4xl">
-            <h2 className="mb-4 text-lg font-bold">EMA 均线监控</h2>
-            <EmaMonitors
-              monitors={emaMonitors}
-              prices={priceInfo?.prices || {}}
-              onDelete={handleDelete}
-              onRestore={handleRestore}
-              onChanged={() => refresh(true)}
-            />
           </div>
         ) : (
           <div className="mx-auto flex max-w-6xl items-start gap-6">
@@ -623,6 +600,17 @@ export default function Dashboard({ username, onLogout }: { username: string; on
                   ))
                 )}
               </div>
+
+              <section className="mt-8 border-t border-zinc-200 pt-6">
+                <h3 className="mb-4 text-lg font-bold">EMA 均线监控</h3>
+                <EmaMonitors
+                  monitors={emaMonitors}
+                  prices={priceInfo?.prices || {}}
+                  onDelete={handleDelete}
+                  onRestore={handleRestore}
+                  onChanged={() => refresh(true)}
+                />
+              </section>
             </div>
           </div>
         )}

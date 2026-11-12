@@ -11,17 +11,6 @@ import {
 import { fmtPrice, fmtTime } from '@/lib/api'
 import type { Monitor } from '@/types'
 import MonitorDialog from '@/components/CreateMonitorDialog'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -183,37 +172,16 @@ export default function MonitorGroup({ symbol, monitors, price, onChanged, onDel
                 )}
 
                 {m.status === 'deleted' && (
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs text-red-500 hover:bg-red-50 hover:text-red-600"
-                        disabled={busyId !== null}
-                      >
-                        <XCircle className="mr-1 h-3.5 w-3.5" />
-                        彻底删除
-                      </Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>彻底删除这条监控？</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          {m.symbol} {m.direction === 'above' ? '≥' : '≤'}{' '}
-                          {fmtPrice(m.target_price)} 将被永久删除，无法恢复。
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>取消</AlertDialogCancel>
-                        <AlertDialogAction
-                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                          onClick={() => run(m.id, onDelete)}
-                        >
-                          彻底删除
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs text-red-500 hover:bg-red-50 hover:text-red-600"
+                    disabled={busyId !== null}
+                    onClick={() => run(m.id, onDelete)}
+                  >
+                    <XCircle className="mr-1 h-3.5 w-3.5" />
+                    彻底删除
+                  </Button>
                 )}
               </span>
             </div>

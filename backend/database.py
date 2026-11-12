@@ -739,6 +739,13 @@ def get_sec_hit(hit_id: int) -> Optional[dict[str, Any]]:
     return _row_to_dict(row) if row else None
 
 
+def delete_sec_hit(hit_id: int) -> bool:
+    """只删除展示记录，不触碰 sec_seen 中的申报去重标记"""
+    with _lock, _conn:
+        cur = _conn.execute("DELETE FROM sec_hits WHERE id=?", (hit_id,))
+        return cur.rowcount > 0
+
+
 def mark_sec_hit_read(hit_id: int) -> bool:
     """把单条财报记录标为已阅（重复标记不改时间）"""
     with _lock, _conn:
@@ -957,6 +964,19 @@ def add_corr_alert(
             (monitor_id, symbol, interval, kind, r, prev_r, threshold, open_time, _now()),
         )
         return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def find_corr_alert(
+    monitor_id: int, interval: str, kind: str, open_time: int
+) -> Optional[dict[str, Any]]:
+    """按监控、周期、事件类型和 K 线时间查找，避免异常恢复后重复告警"""
+    with _lock:
+        row = _conn.execute(
+            """SELECT * FROM corr_alerts
+               WHERE monitor_id=? AND interval=? AND kind=? AND open_time=? LIMIT 1""",
+            (monitor_id, interval, kind, open_time),
+        ).fetchone()
+    return _row_to_dict(row) if row else None
 
 
 def get_corr_alert(alert_id: int) -> Optional[dict[str, Any]]:

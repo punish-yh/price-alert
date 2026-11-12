@@ -219,7 +219,8 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
   const [busyId, setBusyId] = useState<number | null>(null)
   const [markingId, setMarkingId] = useState<number | null>(null)
   const [markingAll, setMarkingAll] = useState(false)
-  const [showBaseline, setShowBaseline] = useState(false)
+  const [deletingHitId, setDeletingHitId] = useState<number | null>(null)
+  const [showOlder, setShowOlder] = useState(false)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refreshTasks = useCallback(async (silent = false) => {
@@ -249,7 +250,6 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
   }, [refreshTasks])
 
   async function handleDelete(id: number) {
-    if (!window.confirm('确定删除该监听任务？已捕获的财报记录会保留。')) return
     setBusyId(id)
     try {
       await api.deleteSecTask(id)
@@ -260,6 +260,19 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
       toast.error(err instanceof Error ? err.message : '删除失败')
     } finally {
       setBusyId(null)
+    }
+  }
+
+  async function handleDeleteHit(id: number) {
+    setDeletingHitId(id)
+    try {
+      await api.deleteSecHit(id)
+      toast.success('财报记录已删除')
+      onChanged()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      setDeletingHitId(null)
     }
   }
 
@@ -289,10 +302,11 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
   }
 
   const freshHits = hits.filter((h) => !h.baseline)
-  const baselineHits = hits.filter((h) => h.baseline)
+  const recentFreshHits = freshHits.slice(0, 10)
+  const olderHits = [...freshHits.slice(10), ...hits.filter((h) => h.baseline)]
   const unreadCount = freshHits.filter((h) => !h.read_at).length
 
-  const hitRow = (h: SecHit) => {
+  const hitRow = (h: SecHit, deletable = false) => {
     const unread = !h.read_at
     return (
       <div
@@ -338,7 +352,7 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
                 variant="outline"
                 size="sm"
                 className="h-7 border-amber-300 bg-white px-2 text-xs text-amber-700 hover:bg-amber-50"
-                disabled={markingId !== null || markingAll}
+                disabled={markingId !== null || markingAll || deletingHitId !== null}
                 onClick={() => handleMarkRead(h.id)}
               >
                 {markingId === h.id ? (
@@ -357,6 +371,22 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
                 已阅
               </span>
             ))}
+          {deletable && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-red-500 hover:bg-red-50 hover:text-red-600"
+              disabled={deletingHitId !== null || markingId !== null || markingAll}
+              onClick={() => handleDeleteHit(h.id)}
+            >
+              {deletingHitId === h.id ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+              )}
+              删除
+            </Button>
+          )}
         </span>
       </div>
     )
@@ -532,19 +562,19 @@ export default function SecMonitor({ hits, status, onChanged }: Props) {
               还没有捕获到新财报。任务创建后新发布的 8-K 业绩公告会第一时间出现在这里并弹窗提醒。
             </p>
           ) : (
-            freshHits.map(hitRow)
+            recentFreshHits.map((h) => hitRow(h))
           )}
-          {baselineHits.length > 0 && (
+          {olderHits.length > 0 && (
             <div className="pt-1">
               <button
                 type="button"
                 className="text-xs text-zinc-400 hover:text-zinc-600 hover:underline"
-                onClick={() => setShowBaseline((v) => !v)}
+                onClick={() => setShowOlder((v) => !v)}
               >
-                {showBaseline ? '收起' : '展开'}任务创建前的存量记录（{baselineHits.length} 条）
+                {showOlder ? '收起' : '展开'}更早的捕获记录（{olderHits.length} 条，可逐条删除）
               </button>
-              {showBaseline && (
-                <div className="mt-2 space-y-2 opacity-60">{baselineHits.map(hitRow)}</div>
+              {showOlder && (
+                <div className="mt-2 space-y-2">{olderHits.map((h) => hitRow(h, true))}</div>
               )}
             </div>
           )}

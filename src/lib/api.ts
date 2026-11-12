@@ -149,6 +149,8 @@ export const api = {
     request<{ ok: boolean; marked: number; unread: number }>('/api/sec/hits/read-all', {
       method: 'POST',
     }),
+  deleteSecHit: (id: number) =>
+    request<{ ok: boolean; unread: number }>(`/api/sec/hits/${id}/delete`, { method: 'POST' }),
   corrMonitors: () =>
     request<{ items: CorrMonitor[]; status: CorrPollerStatus }>('/api/corr/monitors'),
   createCorrMonitor: (body: {

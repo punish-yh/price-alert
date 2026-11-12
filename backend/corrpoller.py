@@ -165,15 +165,19 @@ async def _send_corr_webhook(client: httpx.AsyncClient, m: dict, alert: dict) ->
 async def _fire(
     client: httpx.AsyncClient,
     m: dict,
+    interval: str,
     kind: str,
     r: float,
     prev_r: float | None,
     threshold: float,
     open_time: int,
 ) -> None:
-    """先落库再发通知，保证进程崩溃也不会重复告警"""
-    alert_id = database.add_corr_alert(m["id"], m["symbol"], m["interval"], kind, r, prev_r, threshold, open_time)
-    log.info("相关度告警 #%d %s %s %s r=%.4f prev=%s th=%.2f", m["id"], m["symbol"], m["interval"], kind, r, prev_r, threshold)
+    """先落库再发通知；同一 K 线的同类事件不重复记录或补发"""
+    if database.find_corr_alert(m["id"], interval, kind, open_time) is not None:
+        log.info("相关度告警已存在，跳过重复事件: %s %s %s open_time=%d", m["symbol"], interval, kind, open_time)
+        return
+    alert_id = database.add_corr_alert(m["id"], m["symbol"], interval, kind, r, prev_r, threshold, open_time)
+    log.info("相关度告警 #%d %s %s %s r=%.4f prev=%s th=%.2f", alert_id, m["symbol"], interval, kind, r, prev_r, threshold)
     alert = database.get_corr_alert(alert_id)
     secpoller.publish({"type": "corr_alert", "alert": alert})
     if not m["notify_webhook"]:
@@ -181,7 +185,7 @@ async def _fire(
     ok, err = await _send_corr_webhook(client, m, {**alert, "alert_id": alert_id})
     database.set_corr_alert_webhook(alert_id, ok, err)
     if not ok:
-        log.error("相关度告警 #%d webhook 发送失败: %s", m["id"], err)
+        log.error("相关度告警 #%d webhook 发送失败: %s", alert_id, err)
 
 
 async def _process_interval(
@@ -227,7 +231,7 @@ async def _process_interval(
         if d_th is not None:
             if abs(r) <= d_th and not decorr_active:
                 decorr_active = True
-                await _fire(client, m, "decorr", r, prev_r, d_th, ot)
+                await _fire(client, m, interval, "decorr", r, prev_r, d_th, ot)
             elif abs(r) > d_th and decorr_active:
                 decorr_active = False
                 log.info("%s %s 脱钩恢复 |r|=%.4f > %.2f", m["symbol"], interval, abs(r), d_th)
@@ -239,7 +243,7 @@ async def _process_interval(
             and ot - last_shift_open >= SHIFT_COOLDOWN_CANDLES * INTERVAL_MS[interval]
         ):
             last_shift_open = ot
-            await _fire(client, m, "shift", r, prev_r, s_th, ot)
+            await _fire(client, m, interval, "shift", r, prev_r, s_th, ot)
         database.save_corr_state(m["id"], interval, ot, r, decorr_active, last_shift_open)
         await asyncio.sleep(0.2)  # 轻微间隔，避免打满权重
 
