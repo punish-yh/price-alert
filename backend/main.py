@@ -246,14 +246,113 @@ async def tv_webhook(token: str, request: Request):
     return {"ok": True, "id": record_id}
 
 
+class TvConditionUpdate(BaseModel):
+    filter_type: str
+    interval: str
+    direction: str
+
+
+class TvRuleUpdate(BaseModel):
+    id: int = Field(default=0, ge=0)
+    name: str = Field(max_length=50)
+    symbol: str = Field(min_length=1, max_length=32)
+    conditions: list[TvConditionUpdate] = Field(min_length=1, max_length=16)
+    notify_webhook: bool = True
+    enabled: bool = True
+
+
 @app.get("/api/tv/config")
 async def tv_config(user: str = auth.CurrentUser):
     return {"webhook_path": f"/api/tv-webhook/{config.TV_WEBHOOK_TOKEN}"}
 
 
+@app.get("/api/tv/overview")
+async def tv_overview(user: str = auth.CurrentUser):
+    now = datetime.now(timezone.utc)
+    return {
+        "items": database.list_tv_forwards(),
+        "active": database.list_active_tv_signals(tvrelay._iso(now)),
+        "rules": tvrelay.get_rules(),
+        "combo_alerts": database.list_tv_combo_alerts(),
+        "server_time": tvrelay._iso(now),
+    }
+
+
 @app.get("/api/tv/forwards")
 async def tv_forwards(user: str = auth.CurrentUser):
     return {"items": database.list_tv_forwards()}
+
+
+@app.get("/api/tv/combo-alerts")
+async def tv_combo_alerts(user: str = auth.CurrentUser):
+    return {"items": database.list_tv_combo_alerts()}
+
+
+@app.post("/api/tv/rules")
+async def tv_rule_save(
+    body: TvRuleUpdate,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    name = body.name.strip()
+    symbol = body.symbol.strip().upper()
+    if not name:
+        raise HTTPException(400, "组合名称不能为空")
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,31}", symbol):
+        raise HTTPException(400, "币种代码格式不正确，需与 TradingView ticker 一致")
+    conditions: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for condition in body.conditions:
+        if condition.filter_type not in ("wave", "trend", "any"):
+            raise HTTPException(400, "过滤器仅支持波段、趋势或任意过滤器")
+        if condition.interval not in tvrelay.INTERVALS:
+            raise HTTPException(400, "周期仅支持 15m、1h、4h、1d")
+        if condition.direction not in tvrelay.DIRECTIONS:
+            raise HTTPException(400, "信号组仅支持看涨或看跌")
+        key = (condition.filter_type, condition.interval, condition.direction)
+        if key in seen:
+            raise HTTPException(400, "组合中存在重复条件")
+        seen.add(key)
+        conditions.append({
+            "filter_type": condition.filter_type,
+            "interval": condition.interval,
+            "direction": condition.direction,
+        })
+
+    rules = tvrelay.get_rules()
+    rule = {
+        "id": body.id,
+        "name": name,
+        "symbol": symbol,
+        "conditions": conditions,
+        "notify_webhook": body.notify_webhook,
+        "enabled": body.enabled,
+    }
+    for index, old in enumerate(rules):
+        if body.id > 0 and old["id"] == body.id:
+            rules[index] = rule
+            break
+    else:
+        rule["id"] = max((item["id"] for item in rules), default=0) + 1
+        rules.append(rule)
+    database.set_state(tvrelay.TV_RULES_KEY, json.dumps(rules, ensure_ascii=False))
+    tvrelay.reset_rule_state(rule["id"])
+    return {"ok": True, "rules": tvrelay.get_rules()}
+
+
+@app.post("/api/tv/rules/{rule_id}/delete")
+async def tv_rule_delete(
+    rule_id: int,
+    user: str = auth.CurrentUser,
+    _: None = auth.CsrfGuard,
+):
+    rules = tvrelay.get_rules()
+    remaining = [rule for rule in rules if rule["id"] != rule_id]
+    if len(remaining) == len(rules):
+        raise HTTPException(404, "组合规则不存在")
+    database.set_state(tvrelay.TV_RULES_KEY, json.dumps(remaining, ensure_ascii=False))
+    tvrelay.reset_rule_state(rule_id)
+    return {"ok": True, "rules": remaining}
 
 
 @app.post("/api/tv/forwards/{record_id}/delete")

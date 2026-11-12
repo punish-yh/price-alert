@@ -88,7 +88,7 @@ def _load_tv_token() -> str:
     return token
 
 TV_WEBHOOK_TOKEN = _load_tv_token()
-# TV 转发入口限流：单 IP 每窗口最多转发次数 / 窗口秒数（防止被刷导致饭碗告警配额耗尽）
+# TV 信号入口限流：单 IP 每窗口最多接收次数 / 窗口秒数（防止公开入口被刷）
 TV_RATE_LIMIT = int(os.getenv("TV_RATE_LIMIT", "60"))
 TV_RATE_WINDOW = int(os.getenv("TV_RATE_WINDOW", "3600"))
 

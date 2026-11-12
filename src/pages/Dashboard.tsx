@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, Bell, CandlestickChart, FileSearch, GitCompareArrows, LineChart, Loader2, LogOut, Percent, Radio, TrendingUp } from 'lucide-react'
 import { api, fmtTime } from '@/lib/api'
-import type { BiasAlert, CorrAlert, DivAlert, Monitor, MonitorStatus, PricesResponse, SecHit, SecStatus } from '@/types'
+import type { BiasAlert, CorrAlert, DivAlert, Monitor, MonitorStatus, PricesResponse, SecHit, SecStatus, TvComboAlert } from '@/types'
 import BiasMonitor from '@/components/BiasMonitor'
 import CreateMonitorDialog from '@/components/CreateMonitorDialog'
 import CorrMonitor from '@/components/CorrMonitor'
@@ -43,6 +43,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
   const lastCorrAlertId = useRef<number | null>(null)
   const lastDivAlertId = useRef<number | null>(null)
   const lastBiasAlertId = useRef<number | null>(null)
+  const lastTvAlertId = useRef<number | null>(null)
 
   /** SEC 新财报弹窗（SSE 与轮询共用，按命中 id 去重） */
   const notifySecHit = useCallback((h: SecHit) => {
@@ -105,16 +106,27 @@ export default function Dashboard({ username, onLogout }: { username: string; on
     })
   }, [])
 
+  /** TV 周期组合告警弹窗（SSE 与轮询共用，按告警 id 去重） */
+  const notifyTvAlert = useCallback((a: TvComboAlert) => {
+    if (lastTvAlertId.current !== null && a.id <= lastTvAlertId.current) return
+    lastTvAlertId.current = Math.max(lastTvAlertId.current ?? 0, a.id)
+    toast.warning(`${a.symbol} TV 组合「${a.rule_name}」`, {
+      description: a.conditions.map((c) => `${c.interval} ${c.direction === 'bullish' ? '看涨' : '看跌'}`).join(' + '),
+      duration: 15000,
+    })
+  }, [])
+
   // 后端 SSE 实时推送：财报命中即刻弹窗（无轮询延迟）；断线时由下方轮询兜底
   const refresh = useCallback(async (silent = false) => {
     try {
-      const [m, p, s, c, d, b] = await Promise.all([
+      const [m, p, s, c, d, b, t] = await Promise.all([
         api.monitors(),
         api.prices(),
         api.secHits(),
         api.corrAlerts(),
         api.divAlerts(),
         api.biasAlerts(),
+        api.tvComboAlerts(),
       ])
       setMonitors(m.items)
       setUnreadTriggered(m.unread_triggered)
@@ -165,12 +177,21 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           notifyBiasAlert(a)
         }
       }
+      // TV 组合告警轮询兜底
+      const maxTvId = t.items.length ? Math.max(...t.items.map((a) => a.id)) : 0
+      if (lastTvAlertId.current === null) {
+        lastTvAlertId.current = maxTvId
+      } else {
+        for (const a of t.items.filter((x) => x.id > lastTvAlertId.current!).reverse()) {
+          notifyTvAlert(a)
+        }
+      }
     } catch (err) {
       if (!silent) toast.error(err instanceof Error ? err.message : '加载失败')
     } finally {
       setLoading(false)
     }
-  }, [notifySecHit, notifyCorrAlert, notifyDivAlert, notifyBiasAlert])
+  }, [notifySecHit, notifyCorrAlert, notifyDivAlert, notifyBiasAlert, notifyTvAlert])
 
   // 后端 SSE 实时推送：财报命中即刻弹窗（无轮询延迟）；断线时由轮询兜底
   useEffect(() => {
@@ -194,12 +215,16 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           notifyBiasAlert(data.alert as BiasAlert)
           refresh(true)
         }
+        if (data?.type === 'tv_combo_alert' && data.alert) {
+          notifyTvAlert(data.alert as TvComboAlert)
+          refresh(true)
+        }
       } catch {
         /* 非 JSON 消息忽略 */
       }
     }
     return () => es.close()
-  }, [notifySecHit, notifyCorrAlert, notifyDivAlert, notifyBiasAlert, refresh])
+  }, [notifySecHit, notifyCorrAlert, notifyDivAlert, notifyBiasAlert, notifyTvAlert, refresh])
 
   useEffect(() => {
     refresh()
@@ -370,7 +395,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
           {navItem('div', <CandlestickChart className="h-4 w-4" />, 'BTC 背离监控')}
           {navItem('bias', <Percent className="h-4 w-4" />, 'BTC 乖离率')}
           {navItem('sec', <FileSearch className="h-4 w-4" />, 'SEC 财报监听')}
-          {navItem('tv', <Radio className="h-4 w-4" />, 'TradingView 转发')}
+          {navItem('tv', <Radio className="h-4 w-4" />, 'TV 告警转发')}
         </nav>
 
         <div className="space-y-3 border-t border-zinc-100 p-3">
@@ -428,7 +453,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
             ['div', 'BTC 背离'],
             ['bias', 'BTC 乖离率'],
             ['sec', 'SEC 财报'],
-            ['tv', 'TV 转发'],
+            ['tv', 'TV 告警转发'],
           ] as const).map(([v, label]) => (
             <button
               key={v}
@@ -451,7 +476,7 @@ export default function Dashboard({ username, onLogout }: { username: string; on
       <main className="min-w-0 flex-1 px-3 py-4 sm:px-4 md:px-6 md:py-6">
         {view === 'tv' ? (
           <div className="mx-auto max-w-4xl">
-            <h2 className="mb-4 text-lg font-bold">TradingView 转发</h2>
+            <h2 className="mb-4 text-lg font-bold">TV 告警转发</h2>
             <TvForwards />
           </div>
         ) : view === 'sec' ? (

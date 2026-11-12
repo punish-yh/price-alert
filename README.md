@@ -10,7 +10,7 @@
 4. **BTC 背离监控**：BTCUSDT 的 K 线（15m / 1h / 4h / 1d）与五种顶底背离检测——量价、RSI、OBV、MACD(DIF)、MACD 面积；候选背离保留旧实时逻辑（每 5 分钟、含正在走的 K 线），确认背离与参考网站算法一致（仅已收盘 K 线、右侧 2 根确认）；每条规则可选仅候选、仅确认或两者，默认任一已选背离即告警，主动设置数量阈值后才按组合告警；通知可选「网页+饭碗」或「仅网页」
 5. **BTC 乖离率**：BTCUSDT 的 15m / 1h / 4h K 线与 MA20、BIAS20、成交量倍数及 RSI14 图表；结合负／正乖离方向、异常放量与 RSI 标记强信号和放量偏离，展示最近 600 根 K 线及历史识别记录；可选价格告警在已收盘 K 线满足乖离率识别且最低价 ≤ 自设触发价时触发，通知可选「网页+饭碗」或「仅网页」
 6. **SEC 财报监听**：指定监听日期 + 北京时间窗口监听 SEC EDGAR，标的（如 NVDA）发布 8-K 业绩公告（含 Item 2.02，含修订版）时第一时间在页面弹窗并留存记录（含 SEC 原文链接）；多标的任务须**每只都捕获到**才算「已获取」，中途显示捕获进度（x/y 只），任务状态分色显示（未启动 / 监听中 / 已获取 / 监听失败）；捕获记录可逐条「已阅」，侧边栏角标只统计未读
-7. **TradingView 告警转发**：公开 webhook 入口，接收 TradingView 告警后转发到饭碗告警，并逐条记录
+7. **TV 告警转发**：公开 webhook 入口解析波段／趋势过滤器信号，按 15m / 1h / 4h / 1d 自然周期维护有效期；同一币种的多个周期与方向同时有效时触发自定义组合告警，提供接收历史、当前有效信号、组合配置与触发记录
 
 **标准价说明**：价格类判定统一使用「合约优先」价格——该交易对有 USDT 永续合约就看合约价，没有合约才用现货价。交易对候选列表为现货 + 合约合并去重（合约含 `TRADIFI_PERPETUAL` 股票类永续，如 NVDAUSDT、NBISUSDT、AAPLUSDT），同名交易对只会出现一个。
 
@@ -97,13 +97,17 @@
 - 代码用 SEC 官方名录（company_tickers.json，缓存 24 小时）校验；`SEC_USER_AGENT` 建议改成自己的邮箱（SEC 要求）
 - 运行日志同时落盘到 `backend/data/app.log`（单文件 5MB、轮转 3 份）：进入 / 离开监听窗口、候选 8-K、业绩核对结果、轮询错误均有记录，排查漏报时直接取该文件
 
-### TradingView 转发
+### TV 告警转发
 
-- 入口地址在网页「TradingView 转发」页可复制：`https://你的域名/api/tv-webhook/<token>`
-- URL 中的 token 即凭证（自动生成并保存在 `backend/data/tv_token.key`，可用 `TV_WEBHOOK_TOKEN` 覆盖）
-- 告警消息支持**纯文本**或 **JSON**；JSON 的每个键都会透传为饭碗告警模板变量
-- 每条转发单独记录：时间、来源 IP、内容摘要、原始报文、送达结果；可在网页查看和删除
-- 单 IP 限流（默认 60 次/小时），防止入口被刷耗尽饭碗告警配额
+- 入口地址在网页「TV 告警转发」页可复制：`https://你的域名/api/tv-webhook/<token>`；升级不改变原地址。URL 中的 token 即凭证（自动生成并保存在 `backend/data/tv_token.key`，可用 `TV_WEBHOOK_TOKEN` 覆盖）
+- 接收两种约定纯文本，标题分别为 `【波段过滤器】` 与 `【趋势过滤器】`。正文必须包含：`币种：{{exchange}}:{{ticker}}`、`周期：{{interval}}`、`触发时间：{{timenow}}（UTC）`、`信号组：所有看涨信号` 或 `所有看跌信号`；网页提供完整模板
+- 解析并保存过滤器、交易所、币种、周期、UTC 触发时间、信号方向与有效期。周期仅支持 **15m / 1h / 4h / 1d**；格式不符、占位符未替换或字段无效时仅记录原文和失败原因，不进入有效信号，也不再逐条直接转发饭碗
+- **自然周期有效期**：从消息中的 UTC 触发时间开始，到下一个自然周期边界结束。例如 08:30 的 15m 信号有效至 08:45，08:40 的 4h 信号有效至 12:00；1d 按 UTC 日界计算。同一「币种 × 过滤器 × 周期 × 方向」重复到达时更新为最新记录
+- 页面分为「接收历史」「当前有效」「组合告警」三组选项卡。有效信号到期自动移出；历史保留原始报文、解析结果和来源 IP，旧版记录升级后仍然保留
+- **自定义组合**：每条规则针对同一币种，可添加多个条件，每项独立选择波段／趋势／任意过滤器、周期和看涨／看跌方向；全部条件同时处于有效窗口才触发。保存规则时不回放历史信号，系统不会自动创建规则
+- 同一组合窗口只告警一次，重复消息不会反复通知；任一条件失效后重新武装，下一有效窗口再次满足时可再次告警。组合触发记录保存当时实际命中的信号及有效期
+- 通知可选「网页弹窗 + 饭碗」或「仅网页弹窗」。饭碗首次失败后每 2 分钟重试，最多重试 3 次；重试不阻塞信号接收，服务重启不补发中断的重试
+- 单 IP 限流（默认 60 次/小时），防止公开入口被刷
 
 ## 快速开始（本地开发）
 
@@ -216,7 +220,7 @@ server {
 }
 ```
 
-证书用 `sudo apt install certbot python3-certbot-nginx && sudo certbot --nginx` 免费签发即可。部署后访问 `https://你的域名`，在「TradingView 转发」页复制的 webhook 地址会自动带上域名，填进 TradingView 告警即可。
+证书用 `sudo apt install certbot python3-certbot-nginx && sudo certbot --nginx` 免费签发即可。部署后访问 `https://你的域名`，在「TV 告警转发」页复制的 webhook 地址会自动带上域名，填进 TradingView 告警即可。
 
 ### 8. 无域名快速对外（仅自用，HTTP 明文）
 
@@ -356,24 +360,19 @@ sudo systemctl restart price-alert
 | `{{low}}` / `{{trigger_price}}` | K 线最低价 / 用户配置的触发价格 |
 | `{{candle_time}}` / `{{time}}` | 触发 K 线时间 / 检测时间（均为北京时间） |
 
-**TradingView 转发**发送的占位符：
+**TV 组合告警**发送的占位符：
 
 | 占位符 | 内容 |
 | --- | --- |
-| `{{message}}` / `{{content}}` / `{{text}}` | `【TradingView】+ 告警摘要` |
-| `{{brief}}` | 告警摘要（取 message/text/content/msg 键或 ticker+close） |
-| `{{source}}` | 固定 `tradingview` |
-| `{{time}}` | 转发时间（北京时间） |
-| `{{raw}}` | TradingView 原始报文 |
-| `{{ticker}}` `{{close}}` `{{exchange}}` `{{interval}}` 等 | 若 TV 告警消息是 JSON，其中所有标量键原样透传 |
+| `{{message}}` / `{{content}}` / `{{text}}` | 完整组合告警文案，含币种、全部条件与检测时间 |
+| `{{brief}}` | 简短文案，如 `TV组合 BTCUSDT.P 4h + 15m 看跌共振` |
+| `{{source}}` / `{{type}}` | 固定 `tradingview` / `tv_combo` |
+| `{{rule_name}}` / `{{symbol}}` | 组合名称 / 触发币种 |
+| `{{conditions}}` | 本次组合条件的中文描述 |
+| `{{signals}}` | 实际命中的结构化信号 JSON，含 UTC 触发时间和有效期 |
+| `{{time}}` | 组合检测时间（北京时间） |
 
-推荐在 TradingView 告警消息里写 JSON 来使用 TV 自己的占位符，例如：
-
-```json
-{"ticker":"{{ticker}}","exchange":"{{exchange}}","interval":"{{interval}}","close":"{{close}}","time":"{{time}}","message":"我的策略信号：{{ticker}} 现价 {{close}}"}
-```
-
-TradingView 发送前会把 `{{...}}` 替换成实际值，本服务解析后原样透传给饭碗告警。
+饭碗只在组合触发时发送；原始 TV 消息不再逐条转发。
 
 ## 敏感信息说明（公开仓库前必读）
 
@@ -395,7 +394,7 @@ backend/            FastAPI 后端
   divpoller.py      BTC 背离检测（量价/RSI/OBV/MACD/面积）与组合告警
   biaspoller.py     BTC 乖离率图表、最低价触发告警与通知重试
   secpoller.py      SEC 财报监听轮询
-  tvrelay.py        TradingView webhook 转发
+  tvrelay.py        TV 信号解析、周期有效性、组合告警与通知重试
   database.py       SQLite 存储层
   auth.py           登录 / JWT / CSRF
   config.py         环境变量配置

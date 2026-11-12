@@ -28,6 +28,10 @@ export interface PricesResponse {
   server_time: number
 }
 
+export type TvFilterType = 'wave' | 'trend'
+export type TvDirection = 'bullish' | 'bearish'
+export type TvInterval = '15m' | '1h' | '4h' | '1d'
+
 export interface TvForward {
   id: number
   received_at: string
@@ -37,6 +41,42 @@ export interface TvForward {
   summary: string
   forward_ok: number | null
   forward_error: string | null
+  filter_type: '' | TvFilterType
+  exchange: string
+  symbol: string
+  interval: '' | TvInterval
+  trigger_time: string
+  direction: '' | TvDirection
+  signal_group: string
+  valid_until: string
+  parse_error: string
+}
+
+export interface TvCondition {
+  filter_type: TvFilterType | 'any'
+  interval: TvInterval
+  direction: TvDirection
+}
+
+export interface TvComboRule {
+  id: number
+  name: string
+  symbol: string
+  conditions: TvCondition[]
+  notify_webhook: boolean
+  enabled: boolean
+}
+
+export interface TvComboAlert {
+  id: number
+  rule_id: number
+  rule_name: string
+  symbol: string
+  conditions: TvCondition[]
+  signals: TvForward[]
+  webhook_ok: number | null
+  webhook_error: string
+  created_at: string
 }
 
 export type SecTaskState = 'pending' | 'listening' | 'acquired' | 'failed'

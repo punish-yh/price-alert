@@ -63,11 +63,47 @@ def init_db() -> None:
                 raw_body     TEXT    NOT NULL DEFAULT '',
                 summary      TEXT    NOT NULL DEFAULT '',
                 forward_ok   INTEGER,
-                forward_error TEXT   NOT NULL DEFAULT ''
+                forward_error TEXT   NOT NULL DEFAULT '',
+                filter_type  TEXT    NOT NULL DEFAULT '',
+                exchange     TEXT    NOT NULL DEFAULT '',
+                symbol       TEXT    NOT NULL DEFAULT '',
+                interval     TEXT    NOT NULL DEFAULT '',
+                trigger_time TEXT    NOT NULL DEFAULT '',
+                direction    TEXT    NOT NULL DEFAULT '',
+                signal_group TEXT    NOT NULL DEFAULT '',
+                valid_until  TEXT    NOT NULL DEFAULT '',
+                parse_error  TEXT    NOT NULL DEFAULT ''
             )
             """
         )
+        # 旧版只有原文和转发结果；升级后补充结构化信号字段，原记录原样保留。
+        cols_tv = {r["name"] for r in _conn.execute("PRAGMA table_info(tv_forwards)")}
+        for name in (
+            "filter_type", "exchange", "symbol", "interval", "trigger_time",
+            "direction", "signal_group", "valid_until", "parse_error",
+        ):
+            if name not in cols_tv:
+                _conn.execute(f"ALTER TABLE tv_forwards ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
         _conn.execute("CREATE INDEX IF NOT EXISTS idx_tv_forwards_time ON tv_forwards(received_at)")
+        _conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tv_forwards_active ON tv_forwards(symbol, valid_until)"
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tv_combo_alerts (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id       INTEGER NOT NULL,
+                rule_name     TEXT NOT NULL,
+                symbol        TEXT NOT NULL,
+                conditions    TEXT NOT NULL,
+                signals       TEXT NOT NULL,
+                webhook_ok    INTEGER,
+                webhook_error TEXT NOT NULL DEFAULT '',
+                created_at    TEXT NOT NULL
+            )
+            """
+        )
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_tv_combo_alerts_time ON tv_combo_alerts(created_at)")
         _conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sec_tasks (
@@ -381,24 +417,34 @@ def monitored_symbols() -> list[str]:
     return [r["symbol"] for r in rows]
 
 
-# ---------------- TradingView 转发记录 ----------------
+# ---------------- TradingView 信号与组合告警 ----------------
 
-def add_tv_forward(source_ip: str, content_type: str, raw_body: str, summary: str) -> int:
+def add_tv_forward(
+    source_ip: str,
+    content_type: str,
+    raw_body: str,
+    summary: str,
+    signal: dict | None = None,
+    parse_error: str = "",
+) -> int:
+    signal = signal or {}
     with _lock, _conn:
         cur = _conn.execute(
-            """INSERT INTO tv_forwards (received_at, source_ip, content_type, raw_body, summary)
-               VALUES (?,?,?,?,?)""",
-            (_now(), source_ip, content_type, raw_body[:4000], summary[:500]),
+            """INSERT INTO tv_forwards
+               (received_at, source_ip, content_type, raw_body, summary,
+                filter_type, exchange, symbol, interval, trigger_time,
+                direction, signal_group, valid_until, parse_error)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                _now(), source_ip, content_type, raw_body[:4000], summary[:500],
+                signal.get("filter_type", ""), signal.get("exchange", ""),
+                signal.get("symbol", ""), signal.get("interval", ""),
+                signal.get("trigger_time", ""), signal.get("direction", ""),
+                signal.get("signal_group", ""), signal.get("valid_until", ""),
+                parse_error[:500],
+            ),
         )
         return cur.lastrowid  # type: ignore[return-value]
-
-
-def set_tv_forward_result(record_id: int, ok: bool, error: str = "") -> None:
-    with _lock, _conn:
-        _conn.execute(
-            "UPDATE tv_forwards SET forward_ok=?, forward_error=? WHERE id=?",
-            (1 if ok else 0, error[:500], record_id),
-        )
 
 
 def list_tv_forwards(limit: int = 200) -> list[dict[str, Any]]:
@@ -409,10 +455,77 @@ def list_tv_forwards(limit: int = 200) -> list[dict[str, Any]]:
     return [_row_to_dict(r) for r in rows]
 
 
+def list_active_tv_signals(now: str) -> list[dict[str, Any]]:
+    """每种 币种×过滤器×周期×方向 仅保留最新一条未过期信号。"""
+    with _lock:
+        rows = _conn.execute(
+            """SELECT * FROM tv_forwards
+               WHERE parse_error='' AND valid_until != '' AND valid_until > ?
+               ORDER BY id DESC""",
+            (now,),
+        ).fetchall()
+    active: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for row in rows:
+        item = _row_to_dict(row)
+        key = (item["symbol"], item["filter_type"], item["interval"], item["direction"])
+        if key not in seen:
+            seen.add(key)
+            active.append(item)
+    return active
+
+
 def delete_tv_forward(record_id: int) -> bool:
     with _lock, _conn:
         cur = _conn.execute("DELETE FROM tv_forwards WHERE id=?", (record_id,))
         return cur.rowcount > 0
+
+
+def _tv_combo_row(row: sqlite3.Row) -> dict[str, Any]:
+    item = _row_to_dict(row)
+    item["conditions"] = json.loads(item["conditions"])
+    item["signals"] = json.loads(item["signals"])
+    return item
+
+
+def add_tv_combo_alert(
+    rule_id: int, rule_name: str, symbol: str, conditions: list[dict], signals: list[dict]
+) -> int:
+    with _lock, _conn:
+        cur = _conn.execute(
+            """INSERT INTO tv_combo_alerts
+               (rule_id, rule_name, symbol, conditions, signals, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                rule_id, rule_name, symbol,
+                json.dumps(conditions, ensure_ascii=False),
+                json.dumps(signals, ensure_ascii=False),
+                _now(),
+            ),
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def get_tv_combo_alert(alert_id: int) -> dict[str, Any] | None:
+    with _lock:
+        row = _conn.execute("SELECT * FROM tv_combo_alerts WHERE id=?", (alert_id,)).fetchone()
+    return _tv_combo_row(row) if row else None
+
+
+def list_tv_combo_alerts(limit: int = 100) -> list[dict[str, Any]]:
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM tv_combo_alerts ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [_tv_combo_row(r) for r in rows]
+
+
+def set_tv_combo_alert_result(alert_id: int, ok: bool, error: str = "") -> None:
+    with _lock, _conn:
+        _conn.execute(
+            "UPDATE tv_combo_alerts SET webhook_ok=?, webhook_error=? WHERE id=?",
+            (1 if ok else 0, error[:500], alert_id),
+        )
 
 
 # ---------------- SEC 财报监听 ----------------

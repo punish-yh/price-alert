@@ -16,6 +16,8 @@ import type {
   PricesResponse,
   SecHitsResponse,
   SecTask,
+  TvComboAlert,
+  TvComboRule,
   TvForward,
 } from '@/types'
 
@@ -100,7 +102,22 @@ export const api = {
   prices: () => request<PricesResponse>('/api/prices'),
   symbols: () => request<{ symbols: string[] }>('/api/symbols'),
   tvConfig: () => request<{ webhook_path: string }>('/api/tv/config'),
+  tvOverview: () => request<{
+    items: TvForward[]
+    active: TvForward[]
+    rules: TvComboRule[]
+    combo_alerts: TvComboAlert[]
+    server_time: string
+  }>('/api/tv/overview'),
   tvForwards: () => request<{ items: TvForward[] }>('/api/tv/forwards'),
+  tvComboAlerts: () => request<{ items: TvComboAlert[] }>('/api/tv/combo-alerts'),
+  saveTvRule: (body: TvComboRule) =>
+    request<{ ok: boolean; rules: TvComboRule[] }>('/api/tv/rules', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteTvRule: (id: number) =>
+    request<{ ok: boolean; rules: TvComboRule[] }>(`/api/tv/rules/${id}/delete`, { method: 'POST' }),
   deleteTvForward: (id: number) =>
     request<{ ok: boolean }>(`/api/tv/forwards/${id}/delete`, { method: 'POST' }),
   secTasks: () => request<{ items: SecTask[] }>('/api/sec/tasks'),
