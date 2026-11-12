@@ -90,8 +90,11 @@ def parse_signal(raw: str) -> tuple[dict | None, str]:
         return None, "周期仅支持 15m、1h、4h、1d（或 TradingView 数字周期 15、60、240、1440）"
     signal_group = fields.get("信号组", "").strip()
     direction = next((key for key, text in DIRECTIONS.items() if text == signal_group), "")
-    if not direction:
-        return None, "信号组仅支持所有看涨信号或所有看跌信号"
+    # 突破预警只展示，不猜测涨跌方向，也不会匹配仅含看涨/看跌条件的组合规则
+    if signal_group == "突破预警":
+        direction = "breakout"
+    elif not direction:
+        return None, "信号组仅支持所有看涨信号、所有看跌信号或突破预警"
     try:
         trigger_time = _parse_trigger_time(fields.get("触发时间", ""))
     except ValueError as exc:

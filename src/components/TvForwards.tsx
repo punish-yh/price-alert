@@ -28,6 +28,7 @@ const FILTER_CN: Record<string, string> = {
 const DIRECTION_CN: Record<string, string> = {
   bullish: '所有看涨信号',
   bearish: '所有看跌信号',
+  breakout: '突破预警',
 }
 const INTERVALS = ['15m', '1h', '4h', '1d'] as const
 
@@ -54,9 +55,13 @@ function fmtUtc(value: string) {
 }
 
 function DirectionBadge({ direction }: { direction: string }) {
-  const bullish = direction === 'bullish'
+  const className = direction === 'bullish'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    : direction === 'breakout'
+      ? 'border-sky-200 bg-sky-50 text-sky-700'
+      : 'border-red-200 bg-red-50 text-red-600'
   return (
-    <Badge variant="outline" className={bullish ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-600'}>
+    <Badge variant="outline" className={className}>
       {DIRECTION_CN[direction] || direction || '旧版消息'}
     </Badge>
   )
@@ -331,7 +336,7 @@ export default function TvForwards() {
               <pre className="whitespace-pre-wrap rounded-md bg-zinc-50 p-3 font-mono leading-relaxed">{WAVE_TEMPLATE}</pre>
               <pre className="whitespace-pre-wrap rounded-md bg-zinc-50 p-3 font-mono leading-relaxed">{TREND_TEMPLATE}</pre>
             </div>
-            <p className="mt-2 leading-relaxed">周期仅支持 15m、1h、4h、1d；有效期按 UTC 触发时间对齐至下一自然周期边界。</p>
+            <p className="mt-2 leading-relaxed">周期支持 15m、1h、4h、1d 及 TradingView 数字周期 15、60、240、1440；信号组支持所有看涨、所有看跌和突破预警。突破预警仅展示，不参与组合告警。</p>
           </details>
         </CardContent>
       </Card>

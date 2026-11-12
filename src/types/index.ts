@@ -46,7 +46,7 @@ export interface TvForward {
   symbol: string
   interval: '' | TvInterval
   trigger_time: string
-  direction: '' | TvDirection
+  direction: '' | TvDirection | 'breakout'
   signal_group: string
   valid_until: string
   parse_error: string
